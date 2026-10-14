@@ -327,7 +327,7 @@ config_salva = carregar_config()
 if "df_pedidos" not in st.session_state:
     st.session_state["df_pedidos"] = pd.DataFrame()
 
-st.title("🛵 Gerador e Otimizador de Rotas")
+st.title("🛵 Gerador de Rotas")
 
 # --- BARRA LATERAL: CONFIGURAÇÕES SALVÁVEIS ---
 with st.sidebar:
@@ -338,7 +338,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("📦 4 Locais de Saída (Pacotes)")
+    st.header("📦Locais(Pacotes)")
     st.caption("Separe os produtos por vírgula e clique em Salvar abaixo.")
 
     local_1 = st.text_area("Local de Saída 1:", value=config_salva.get("local_1", ""), placeholder="Ex: amendoim, amendoins, amendoa, quebra noz", height=70)
@@ -346,7 +346,7 @@ with st.sidebar:
     local_3 = st.text_area("Local de Saída 3:", value=config_salva.get("local_3", ""), placeholder="Ex: castanha", height=70)
     local_4 = st.text_area("Local de Saída 4:", value=config_salva.get("local_4", ""), placeholder="Produtos do Local 4...", height=70)
 
-    if st.button("💾 Salvar Produtos e Partida", type="primary", use_container_width=True):
+    if st.button("💾 Salvar Produtos/Partida", type="primary", use_container_width=True):
         salvar_config({
             "ponto_partida": ponto_partida,
             "local_1": local_1,
@@ -354,7 +354,7 @@ with st.sidebar:
             "local_3": local_3,
             "local_4": local_4
         })
-        st.success("✅ Produtos e ponto de partida salvos com sucesso!")
+        st.success("✅ Produtos/Partida salvos com sucesso!")
 
     locais_config = {
         "Local 1": [p for p in local_1.split(",") if p.strip()],
@@ -367,13 +367,13 @@ with st.sidebar:
 st.subheader("1️⃣ Adicionar Pedidos")
 
 aba_lote, aba_individual = st.tabs([
-    "📋 Colar Vários de Uma Vez",
-    "➕ Adicionar Cliente 1 por 1"
+    "📋 Colar Vários Pedidos",
+    "➕ Adicionar 1 Pedido"
 ])
 
 with aba_lote:
     texto_pedidos = st.text_area(
-        "Cole os pedidos abaixo (eles serão adicionados à sua lista atual):",
+        "Cole os pedidos abaixo (eles serão adicionados a lista):",
         height=200,
         placeholder=(
             "Exemplo:\ngustavo ramos\n5g amendoim\n1 quebra noz\nAv flor de seda 1030, lindeia\n\n"
@@ -381,10 +381,10 @@ with aba_lote:
         )
     )
     vendedor_lote = st.text_input(
-        "Sigla do Vendedor `[ ]` para este lote (Opcional):",
-        placeholder="Ex: 2L, BG, CK"
+        "Sigla do Vendedor `[ ]` para os pedidos acima:",
+        placeholder="Ex: 2T, VG, NK"
     )
-    if st.button("🔍 Extrair e Adicionar à Lista", type="primary", use_container_width=True):
+    if st.button("🔍Adicionar a Lista", type="primary", use_container_width=True):
         if texto_pedidos.strip():
             with st.spinner("Extraindo pedidos e buscando CEPs e Bairros..."):
                 df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
@@ -392,7 +392,7 @@ with aba_lote:
                     adicionar_pedidos_na_sessao(df_extraidos)
                     st.success(f"✅ {len(df_extraidos)} pedido(s) adicionado(s) à lista!")
                 else:
-                    st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
+                    st.warning("⚠️Não foi possível identificar um endereço válido no texto colado.")
         else:
             st.warning("Cole pelo menos um pedido antes de clicar em extrair.")
 
@@ -412,7 +412,7 @@ with aba_individual:
         submitted_ind = st.form_submit_button("➕ Adicionar Cliente à Lista", type="primary", use_container_width=True)
         if submitted_ind:
             if not nome_ind.strip() or not end_ind.strip():
-                st.error("⚠️ Preencha pelo menos o Nome do Cliente e o Endereço.")
+                st.error("⚠️Preencha pelo menos o Nome do Cliente e o Endereço.")
             else:
                 with st.spinner("Buscando CEP e Bairro do endereço..."):
                     end_comp, status_ind, lat_ind, lon_ind = buscar_endereco_completo(end_ind)
@@ -461,7 +461,7 @@ if not st.session_state["df_pedidos"].empty:
         hide_index=True,
         column_order=["Excluir", "Status", "Cliente", "Vendedor", "Pacotes", "Observacao", "Posicao", "Endereco", "Itens_Lidos"],
         column_config={
-            "Excluir": st.column_config.CheckboxColumn("🗑️ Excluir", width="small", default=False),
+            "Excluir": st.column_config.CheckboxColumn("🗑️", width="small", default=False),
             "Status": st.column_config.TextColumn("Status", disabled=True, width="medium"),
             "Cliente": st.column_config.TextColumn("Cliente (CAIXA ALTA)", width="medium"),
             "Vendedor": st.column_config.TextColumn("Vendedor [ ]", width="small"),
