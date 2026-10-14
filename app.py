@@ -2,12 +2,29 @@ import streamlit as st
 import pandas as pd
 import requests
 import re
+import json
+import os
 import unicodedata
 from urllib.parse import quote
 
 st.set_page_config(page_title="Gerador de Rotas", page_icon="🛵", layout="wide")
 
-# Cidades da Região Metropolitana de BH para detecção automática
+# CSS para garantir responsividade no celular e impedir que botões cortem o texto com "..."
+st.markdown("""
+<style>
+div.stButton > button {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    height: auto !important;
+    min-height: 2.8rem !important;
+    padding: 0.5rem 0.75rem !important;
+    line-height: 1.3 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+ARQUIVO_CONFIG = "config_rotas.json"
+
 CIDADES_RMBH = [
     "belo horizonte", "sabara", "nova lima", "contagem", "betim",
     "santa luzia", "ribeirao das neves", "ibirite", "vespasiano",
@@ -21,22 +38,44 @@ PREFIXOS_RUA = (
 )
 
 
+# ================= FUNÇÕES DE CONFIGURAÇÃO (SALVAR PRODUTOS) =================
+def carregar_config():
+    padrao = {
+        "ponto_partida": "Bairro Maria Goretti, Belo Horizonte, MG",
+        "local_1": "",
+        "local_2": "",
+        "local_3": "",
+        "local_4": ""
+    }
+    if os.path.exists(ARQUIVO_CONFIG):
+        try:
+            with open(ARQUIVO_CONFIG, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+                padrao.update(dados)
+        except Exception:
+            pass
+    return padrao
+
+
+def salvar_config(dados: dict):
+    with open(ARQUIVO_CONFIG, "w", encoding="utf-8") as f:
+        json.dump(dados, f, ensure_ascii=False, indent=2)
+
+
+# ================= FUNÇÕES DE EXTRAÇÃO E ENDEREÇO =================
 def remover_acentos(texto: str) -> str:
     if not texto:
         return ""
-    nfkd = unicodedata.normalize("NFKD", texto)
+    nfkd = unicodedata.normalize("NFKD", str(texto))
     return "".join([c for c in nfkd if not unicodedata.combining(c)])
 
 
 def eh_linha_produto(linha: str, palavras_produtos: list) -> bool:
-    """Identifica se a linha é um produto (ex: '10@', '5g amendoim', '1 quebra noz')."""
     linha_limpa = linha.strip().lower()
     if not linha_limpa:
         return False
-    # Começa com número (ex: 10@, 5g, 1 quebra noz, 2x)
     if re.match(r"^\d+\s*([a-zA-Z@%]+)?(\s+|$)", linha_limpa):
         return True
-    # Ou contém algum produto cadastrado nos 4 locais
     linha_sem_acento = remover_acentos(linha_limpa)
     for prod in palavras_produtos:
         if prod and prod in linha_sem_acento:
@@ -45,24 +84,19 @@ def eh_linha_produto(linha: str, palavras_produtos: list) -> bool:
 
 
 def eh_linha_endereco(linha: str) -> bool:
-    """Identifica se a linha é um endereço (ex: 'Rua Itaipu 760' ou 'Batista Carneiro 112 Salgado Filho')."""
     linha_limpa = remover_acentos(linha.strip().lower())
     if not linha_limpa:
         return False
-    # Se começa com número (ex: '5g amendoim'), não é endereço
     if re.match(r"^\d+", linha_limpa):
         return False
-    # Começa com prefixo de via (Rua, Av, etc.)
     if linha_limpa.startswith(PREFIXOS_RUA):
         return True
-    # Contém nome de rua seguido de número (ex: 'Batista Carneiro 112 Salgado Filho')
     if re.search(r"[a-zA-Z]{3,}\s*,?\s*\d+", linha_limpa):
         return True
     return False
 
 
 def calcular_pacotes(itens_pedido: list, locais_dict: dict) -> int:
-    """Calcula de quantos locais diferentes saem os produtos do pedido."""
     locais_acionados = set()
     texto_itens = remover_acentos(" ".join(itens_pedido).lower())
 
@@ -76,30 +110,23 @@ def calcular_pacotes(itens_pedido: list, locais_dict: dict) -> int:
 
 
 def separar_componentes_endereco(endereco_bruto: str):
-    """Separa rua, número, bairro/complemento e cidade (padrão Belo Horizonte)."""
     end_limpo = endereco_bruto.strip()
     end_norm = remover_acentos(end_limpo.lower())
 
-    # 1. Identificar se alguma cidade da RMBH foi citada no texto
     cidade_detectada = "Belo Horizonte"
+    mapa_nomes_cidades = {
+        "sabara": "Sabará",
+        "ribeirao das neves": "Ribeirão das Neves",
+        "ibirite": "Ibirité",
+        "caete": "Caeté",
+        "mario campos": "Mário Campos",
+        "sao jose da lapa": "São José da Lapa"
+    }
     for cid in CIDADES_RMBH:
         if re.search(rf"\b{cid}\b", end_norm):
-            cidade_detectada = cid.title()
-            if cid == "sabara":
-                cidade_detectada = "Sabará"
-            elif cid == "ribeirao das neves":
-                cidade_detectada = "Ribeirão das Neves"
-            elif cid == "ibirite":
-                cidade_detectada = "Ibirité"
-            elif cid == "caete":
-                cidade_detectada = "Caeté"
-            elif cid == "mario campos":
-                cidade_detectada = "Mário Campos"
-            elif cid == "sao jose da lapa":
-                cidade_detectada = "São José da Lapa"
+            cidade_detectada = mapa_nomes_cidades.get(cid, cid.title())
             break
 
-    # 2. Extrair o número do endereço
     match_num = re.search(r"(?:,\s*|\s+)(\d+)\b(.*)$", end_limpo)
     if match_num:
         rua = end_limpo[:match_num.start()].strip(" ,.-")
@@ -115,12 +142,10 @@ def separar_componentes_endereco(endereco_bruto: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_endereco_completo(endereco_bruto: str):
-    """
-    Busca o endereço completo (Rua, Número, Bairro, Cidade, CEP) em BH e Região Metropolitana
-    usando ViaCEP + ArcGIS Geocoder (100% gratuito).
-    Retorna: (endereco_formatado, status_msg, lat, lon)
-    """
-    rua, numero, bairro_dica, cidade = separar_componentes_endereco(endereco_bruto)
+    if not str(endereco_bruto).strip():
+        return "", "❌ NÃO ENCONTRADO - CORRIGIR", None, None
+
+    rua, numero, bairro_dica, cidade = separar_componentes_endereco(str(endereco_bruto))
     rua_sem_prefixo = re.sub(
         r"^(rua|r\.|r|avenida|av\.|av|alameda|al\.|praca|praça|travessa|beco)\s+",
         "",
@@ -134,7 +159,7 @@ def buscar_endereco_completo(endereco_bruto: str):
     cidade_oficial = cidade
     lat, lon = None, None
 
-    # Passo 1: Tentar ViaCEP na cidade detectada (ex: Belo Horizonte)
+    # 1. Consulta ViaCEP
     if len(rua_sem_prefixo) >= 3:
         try:
             url_viacep = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade))}/{quote(remover_acentos(rua_sem_prefixo))}/json/"
@@ -143,7 +168,6 @@ def buscar_endereco_completo(endereco_bruto: str):
                 dados = resp.json()
                 if isinstance(dados, list) and len(dados) > 0:
                     escolhido = dados[0]
-                    # Se o usuário informou bairro (ex: 'lindeia', 'grajau', 'salgado filho'), filtra pelo bairro
                     if bairro_dica:
                         dica_norm = remover_acentos(bairro_dica.lower())
                         for item in dados:
@@ -158,7 +182,7 @@ def buscar_endereco_completo(endereco_bruto: str):
         except Exception:
             pass
 
-    # Passo 2: Buscar coordenadas e complementar dados via ArcGIS Geocoder gratuito
+    # 2. Consulta ArcGIS Geocoder
     try:
         query_geo = f"{rua}, {numero}, {bairro_dica}, {cidade}, Minas Gerais, Brasil"
         url_arcgis = (
@@ -185,7 +209,7 @@ def buscar_endereco_completo(endereco_bruto: str):
     except Exception:
         pass
 
-    # Se o geocoder descobriu que a rua fica em outra cidade da RMBH (ex: Sabará/Nova Lima) e ainda não temos CEP, consulta ViaCEP na cidade certa
+    # 3. Segunda tentativa ViaCEP caso a cidade seja da RMBH
     if not cep_encontrado and cidade_oficial and len(rua_sem_prefixo) >= 3:
         try:
             url_viacep2 = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade_oficial))}/{quote(remover_acentos(rua_sem_prefixo))}/json/"
@@ -200,14 +224,8 @@ def buscar_endereco_completo(endereco_bruto: str):
         except Exception:
             pass
 
-    # Validação de sucesso ou erro para avisar na tela
     if not logradouro_oficial and not lat:
-        return (
-            endereco_bruto,
-            "❌ NÃO ENCONTRADO - CORRIGIR",
-            None,
-            None
-        )
+        return endereco_bruto, "❌ NÃO ENCONTRADO - CORRIGIR", None, None
 
     nome_via_final = logradouro_oficial if logradouro_oficial else rua.title()
     bairro_final = bairro_oficial if bairro_oficial else (bairro_dica.title() if bairro_dica else "Bairro não identificado")
@@ -232,7 +250,6 @@ def buscar_endereco_completo(endereco_bruto: str):
 
 
 def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
-    """Lê o texto colado e separa cada pedido em Nome, Produtos, Quantidade de Pacotes e Endereço."""
     todas_palavras_prod = [p.strip().lower() for lista in locais_dict.values() for p in lista if p.strip()]
     linhas = [l.strip() for l in texto_bruto.splitlines() if l.strip()]
 
@@ -242,17 +259,16 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
 
     for linha in linhas:
         if nome_atual is None:
-            # Primeira linha válida de um bloco é o nome do cliente
             nome_atual = linha.upper().strip()
             itens_atuais = []
         else:
             if eh_linha_produto(linha, todas_palavras_prod):
                 itens_atuais.append(linha)
             elif eh_linha_endereco(linha):
-                # Chegou no endereço: fecha o pedido atual
                 qtd_pct = calcular_pacotes(itens_atuais, locais_dict)
                 end_completo, status, lat, lon = buscar_endereco_completo(linha)
                 pedidos.append({
+                    "Excluir": False,
                     "Status": status,
                     "Cliente": nome_atual,
                     "Vendedor": vendedor_padrao.upper().strip(),
@@ -267,57 +283,78 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
                 nome_atual = None
                 itens_atuais = []
             else:
-                # Se ainda não tinha itens e apareceu outro texto sem número, pode ser complemento ou item sem número
                 itens_atuais.append(linha)
 
     return pd.DataFrame(pedidos)
 
 
+def adicionar_pedidos_na_sessao(df_novos: pd.DataFrame):
+    if df_novos.empty:
+        return
+    if "df_pedidos" not in st.session_state or st.session_state["df_pedidos"].empty:
+        st.session_state["df_pedidos"] = df_novos
+    else:
+        st.session_state["df_pedidos"] = pd.concat(
+            [st.session_state["df_pedidos"], df_novos],
+            ignore_index=True
+        )
+
+
 def montar_linha_cliente(row) -> str:
-    """Formata a segunda linha no padrão: NOME [VENDEDOR] (XPCT) (OBS)"""
     partes = [str(row["Cliente"]).strip().upper()]
 
     vend = str(row.get("Vendedor", "")).strip().upper()
-    if vend:
+    if vend and vend != "NONE" and vend != "NAN":
         partes.append(f"[{vend}]")
 
     try:
         pct = int(row.get("Pacotes", 1))
-    except ValueError:
+    except (ValueError, TypeError):
         pct = 1
     if pct > 1:
         partes.append(f"({pct}PCT)")
 
     obs = str(row.get("Observacao", "")).strip().upper()
-    if obs:
+    if obs and obs != "NONE" and obs != "NAN":
         partes.append(f"({obs})")
 
     return " ".join(partes)
 
 
-# ================= INTERFACE STREAMLIT =================
-st.title("🛵 Gerador e Otimizador de Rotas - BH & Região")
+# ================= INICIALIZAÇÃO =================
+config_salva = carregar_config()
 
-# --- BARRA LATERAL: CONFIGURAÇÕES ---
+if "df_pedidos" not in st.session_state:
+    st.session_state["df_pedidos"] = pd.DataFrame()
+
+st.title("🛵 Gerador e Otimizador de Rotas")
+
+# --- BARRA LATERAL: CONFIGURAÇÕES SALVÁVEIS ---
 with st.sidebar:
     st.header("📍 Ponto de Partida")
     ponto_partida = st.text_input(
         "Endereço de saída das rotas:",
-        value="Bairro Maria Goretti, Belo Horizonte, MG",
-        help="Você pode alterar para uma rua e número específicos quando quiser."
+        value=config_salva.get("ponto_partida", "Bairro Maria Goretti, Belo Horizonte, MG")
     )
 
     st.divider()
     st.header("📦 4 Locais de Saída (Pacotes)")
-    st.caption(
-        "Digite os produtos que saem de cada local (separados por vírgula). "
-        "O sistema contará automaticamente quantos pacotes (2PCT, 3PCT, 4PCT) o pedido terá."
-    )
+    st.caption("Separe os produtos por vírgula e clique em Salvar abaixo.")
 
-    local_1 = st.text_area("Local de Saída 1:", placeholder="Ex: amendoim, amendoins, amendoa, quebra noz", height=70)
-    local_2 = st.text_area("Local de Saída 2:", placeholder="Ex: granola", height=70)
-    local_3 = st.text_area("Local de Saída 3:", placeholder="Ex: castanha", height=70)
-    local_4 = st.text_area("Local de Saída 4:", placeholder="Digite os produtos do Local 4...", height=70)
+    local_1 = st.text_area("Local de Saída 1:", value=config_salva.get("local_1", ""), placeholder="Ex: amendoim, amendoins, amendoa, quebra noz", height=70)
+    local_2 = st.text_area("Local de Saída 2:", value=config_salva.get("local_2", ""), placeholder="Ex: granola", height=70)
+    local_3 = st.text_area("Local de Saída 3:", value=config_salva.get("local_3", ""), placeholder="Ex: castanha", height=70)
+    local_4 = st.text_area("Local de Saída 4:", value=config_salva.get("local_4", ""), placeholder="Produtos do Local 4...", height=70)
+
+    if st.button("💾 Salvar Produtos e Partida", type="primary", use_container_width=True):
+        salvar_config({
+            "ponto_partida": ponto_partida,
+            "local_1": local_1,
+            "local_2": local_2,
+            "local_3": local_3,
+            "local_4": local_4
+        })
+        st.success("✅ Produtos e ponto de partida salvos com sucesso!")
 
     locais_config = {
         "Local 1": [p for p in local_1.split(",") if p.strip()],
@@ -326,48 +363,94 @@ with st.sidebar:
         "Local 4": [p for p in local_4.split(",") if p.strip()],
     }
 
-# --- PASSO 1: ENTRADA DOS PEDIDOS ---
-st.subheader("1️⃣ Colar Pedidos")
+# --- PASSO 1: ADICIONAR PEDIDOS (EM LOTE OU 1 POR 1) ---
+st.subheader("1️⃣ Adicionar Pedidos")
 
-col_input, col_opcoes = st.columns([3, 1])
-with col_input:
+aba_lote, aba_individual = st.tabs([
+    "📋 Colar Vários de Uma Vez",
+    "➕ Adicionar Cliente 1 por 1"
+])
+
+with aba_lote:
     texto_pedidos = st.text_area(
-        "Cole todos os pedidos abaixo:",
-        height=240,
+        "Cole os pedidos abaixo (eles serão adicionados à sua lista atual):",
+        height=200,
         placeholder=(
-            "Exemplo:\ngustavo ramos\n\n5g amendoim\n1 quebra noz\n\n"
-            "Av flor de seda 1030, lindeia\n\nBernardo\n\n1g granola\n1g amendoa\n\n"
-            "Rua Contria, 1380, Grajau"
+            "Exemplo:\ngustavo ramos\n5g amendoim\n1 quebra noz\nAv flor de seda 1030, lindeia\n\n"
+            "Bernardo\n1g granola\n1g amendoa\nRua Contria, 1380, Grajau"
         )
     )
-
-with col_opcoes:
     vendedor_lote = st.text_input(
-        "Sigla do Vendedor `[ ]` (Opcional):",
-        placeholder="Ex: 2L, BG, CK",
-        help="Se quiser preencher a sigla de todos os pedidos colados de uma vez. Você também poderá editar um por um na tabela."
+        "Sigla do Vendedor `[ ]` para este lote (Opcional):",
+        placeholder="Ex: 2L, BG, CK"
     )
-    st.write("")
-    btn_extrair = st.button("🔍 Extrair e Buscar Endereços", type="primary", use_container_width=True)
+    if st.button("🔍 Extrair e Adicionar à Lista", type="primary", use_container_width=True):
+        if texto_pedidos.strip():
+            with st.spinner("Extraindo pedidos e buscando CEPs e Bairros..."):
+                df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
+                if not df_extraidos.empty:
+                    adicionar_pedidos_na_sessao(df_extraidos)
+                    st.success(f"✅ {len(df_extraidos)} pedido(s) adicionado(s) à lista!")
+                else:
+                    st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
+        else:
+            st.warning("Cole pelo menos um pedido antes de clicar em extrair.")
 
-if btn_extrair and texto_pedidos.strip():
-    with st.spinner("Extraindo pedidos e buscando CEPs e Bairros em BH e Região..."):
-        st.session_state["df_pedidos"] = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
+with aba_individual:
+    with st.form("form_adicionar_um", clear_on_submit=True):
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            nome_ind = st.text_input("Nome do Cliente *", placeholder="Ex: ROX")
+            end_ind = st.text_input("Endereço *", placeholder="Ex: Rua Itaipu 760")
+            itens_ind = st.text_input("Produtos do Pedido (Opcional - calcula pacotes sozinho)", placeholder="Ex: 1g granola, 5g amendoim")
+        with col_f2:
+            vend_ind = st.text_input("Sigla do Vendedor [ ] (Opcional)", placeholder="Ex: 2L")
+            pct_manual = st.number_input("Nº de Pacotes (se não digitar produtos)", min_value=1, max_value=10, value=1, step=1)
+            obs_ind = st.text_input("Observação ( ) (Opcional)", placeholder="Ex: TROCA")
+            pos_ind = st.selectbox("Posição na Rota", ["Normal", "PRIMEIRO", "ÚLTIMO"])
 
-# --- PASSO 2: TABELA DE CONFERÊNCIA E EDIÇÃO ---
-if "df_pedidos" in st.session_state and not st.session_state["df_pedidos"].empty:
+        submitted_ind = st.form_submit_button("➕ Adicionar Cliente à Lista", type="primary", use_container_width=True)
+        if submitted_ind:
+            if not nome_ind.strip() or not end_ind.strip():
+                st.error("⚠️ Preencha pelo menos o Nome do Cliente e o Endereço.")
+            else:
+                with st.spinner("Buscando CEP e Bairro do endereço..."):
+                    end_comp, status_ind, lat_ind, lon_ind = buscar_endereco_completo(end_ind)
+                    if itens_ind.strip():
+                        qtd_pct_ind = calcular_pacotes([itens_ind], locais_config)
+                    else:
+                        qtd_pct_ind = pct_manual
+
+                    novo_df = pd.DataFrame([{
+                        "Excluir": False,
+                        "Status": status_ind,
+                        "Cliente": nome_ind.strip().upper(),
+                        "Vendedor": vend_ind.strip().upper(),
+                        "Pacotes": qtd_pct_ind,
+                        "Observacao": obs_ind.strip().upper(),
+                        "Posicao": pos_ind,
+                        "Endereco": end_comp,
+                        "Itens_Lidos": itens_ind.strip(),
+                        "Lat": lat_ind,
+                        "Lon": lon_ind
+                    }])
+                    adicionar_pedidos_na_sessao(novo_df)
+                    st.success(f"✅ Cliente {nome_ind.upper()} adicionado à lista!")
+
+# --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO ---
+if not st.session_state["df_pedidos"].empty:
     st.divider()
-    st.subheader("2️⃣ Conferência e Edição dos Pedidos Extraídos")
+    st.subheader(f"2️⃣ Conferência dos Pedidos ({len(st.session_state['df_pedidos'])} na lista)")
 
-    df_atual = st.session_state["df_pedidos"]
+    df_atual = st.session_state["df_pedidos"].copy()
+    if "Excluir" not in df_atual.columns:
+        df_atual.insert(0, "Excluir", False)
 
-    # Alerta visual se houver endereços não encontrados ou incompletos
     problemas = df_atual[df_atual["Status"] != "✅ OK"]
     if not problemas.empty:
         st.warning(
             f"⚠️ **{len(problemas)} endereço(s) precisam da sua atenção!** "
-            "Verifique as linhas marcadas com ❌ ou ⚠️ na tabela abaixo, corrija o endereço dando dois cliques na célula "
-            "e clique em **'🔄 Rebuscar Endereços Editados'**."
+            "Edite o endereço na tabela abaixo e clique em **'🔄 Rebuscar Endereços Editados'**."
         )
     else:
         st.success(f"✅ Todos os {len(df_atual)} endereços foram localizados com Bairro e CEP!")
@@ -375,32 +458,33 @@ if "df_pedidos" in st.session_state and not st.session_state["df_pedidos"].empty
     df_editado = st.data_editor(
         df_atual,
         use_container_width=True,
-        num_rows="dynamic",
         hide_index=True,
-        column_order=["Status", "Cliente", "Vendedor", "Pacotes", "Observacao", "Posicao", "Endereco", "Itens_Lidos"],
+        column_order=["Excluir", "Status", "Cliente", "Vendedor", "Pacotes", "Observacao", "Posicao", "Endereco", "Itens_Lidos"],
         column_config={
-            "Status": st.column_config.TextColumn("Status do Endereço", disabled=True, width="medium"),
+            "Excluir": st.column_config.CheckboxColumn("🗑️ Excluir", width="small", default=False),
+            "Status": st.column_config.TextColumn("Status", disabled=True, width="medium"),
             "Cliente": st.column_config.TextColumn("Cliente (CAIXA ALTA)", width="medium"),
             "Vendedor": st.column_config.TextColumn("Vendedor [ ]", width="small"),
-            "Pacotes": st.column_config.NumberColumn("Pacotes (PCT)", min_value=1, max_value=10, step=1, width="small"),
-            "Observacao": st.column_config.TextColumn("Obs ( ) - Ex: TROCA", width="small"),
+            "Pacotes": st.column_config.NumberColumn("Pacotes", min_value=1, max_value=10, step=1, width="small"),
+            "Observacao": st.column_config.TextColumn("Obs ( )", width="small"),
             "Posicao": st.column_config.SelectboxColumn(
-                "Posição na Rota",
+                "Posição",
                 options=["Normal", "PRIMEIRO", "ÚLTIMO"],
                 default="Normal",
                 width="small"
             ),
             "Endereco": st.column_config.TextColumn("Endereço Completo (Editável)", width="large"),
-            "Itens_Lidos": st.column_config.TextColumn("Itens Identificados", disabled=True, width="medium"),
+            "Itens_Lidos": st.column_config.TextColumn("Itens Lidos", disabled=True, width="medium"),
         }
     )
 
-    # Força nomes em CAIXA ALTA mesmo se o usuário editar em minúsculo
     df_editado["Cliente"] = df_editado["Cliente"].astype(str).str.upper()
     st.session_state["df_pedidos"] = df_editado
 
-    col_btn1, col_btn2 = st.columns([1, 3])
-    with col_btn1:
+    # Botões de ação responsivos (empilham automaticamente no celular)
+    col_acao1, col_acao2, col_acao3 = st.columns(3)
+
+    with col_acao1:
         if st.button("🔄 Rebuscar Endereços Editados", use_container_width=True):
             with st.spinner("Atualizando endereços..."):
                 for idx, row in df_editado.iterrows():
@@ -412,7 +496,23 @@ if "df_pedidos" in st.session_state and not st.session_state["df_pedidos"].empty
                 st.session_state["df_pedidos"] = df_editado
                 st.rerun()
 
-    # Prévia do formato final antes de dividirmos as rotas na Parte 2
+    with col_acao2:
+        qtd_marcados = int(df_editado["Excluir"].sum()) if "Excluir" in df_editado.columns else 0
+        texto_btn_excluir = f"🗑️ Excluir Selecionados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Selecionados"
+        if st.button(texto_btn_excluir, use_container_width=True):
+            if qtd_marcados > 0:
+                df_restante = df_editado[~df_editado["Excluir"]].copy()
+                df_restante["Excluir"] = False
+                st.session_state["df_pedidos"] = df_restante.reset_index(drop=True)
+                st.rerun()
+            else:
+                st.toast("Marque a caixinha '🗑️ Excluir' na tabela ao lado do cliente que deseja remover.")
+
+    with col_acao3:
+        if st.button("🧹 Limpar Toda a Lista", use_container_width=True):
+            st.session_state["df_pedidos"] = pd.DataFrame()
+            st.rerun()
+
     with st.expander("👀 Ver prévia de como os pedidos vão sair no texto final", expanded=True):
         linhas_previa = []
         for _, row in df_editado.iterrows():
