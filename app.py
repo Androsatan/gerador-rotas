@@ -396,79 +396,32 @@ with st.sidebar:
         "Local 4": [p for p in local_4.split(",") if p.strip()],
     }
 
-# --- PASSO 1: ADICIONAR PEDIDOS (EM LOTE OU 1 POR 1) ---
+# --- PASSO 1: ADICIONAR PEDIDOS ---
 st.subheader("1️⃣ Adicionar Pedidos")
 
-aba_lote, aba_individual = st.tabs([
-    "📋 Colar Vários Pedidos",
-    "➕ Adicionar 1 Pedido"
-])
-
-with aba_lote:
-    texto_pedidos = st.text_area(
-        "Cole os pedidos abaixo (eles serão adicionados à lista):",
-        height=200,
-        placeholder=(
-            "Exemplo:\ngustavo ramos\n5g amendoim\n1 quebra noz\nAv flor de seda 1030, lindeia\n\n"
-            "Bernardo\n1g granola\n1g amendoa\nRua Contria, 1380, Grajau"
-        )
+texto_pedidos = st.text_area(
+    "Cole um ou vários pedidos abaixo (eles serão adicionados à lista):",
+    height=200,
+    placeholder=(
+        "Exemplo:\ngustavo ramos\n5g amendoim\n1 quebra noz\nAv flor de seda 1030, lindeia\n\n"
+        "Bernardo\n1g granola\n1g amendoa\nRua Contria, 1380, Grajau"
     )
-    vendedor_lote = st.text_input(
-        "Sigla do Vendedor `[ ]` para os pedidos acima:",
-        placeholder="Ex: 2T, VG, NK"
-    )
-    if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True):
-        if texto_pedidos.strip():
-            with st.spinner("Extraindo pedidos e buscando CEPs e Bairros..."):
-                df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
-                if not df_extraidos.empty:
-                    adicionar_pedidos_na_sessao(df_extraidos)
-                    st.success(f"✅ {len(df_extraidos)} pedido(s) adicionado(s) à lista!")
-                else:
-                    st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
-        else:
-            st.warning("Cole pelo menos um pedido antes de clicar em extrair.")
-
-with aba_individual:
-    with st.form("form_adicionar_um", clear_on_submit=True):
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            nome_ind = st.text_input("Nome do Cliente *", placeholder="Ex: ROX")
-            end_ind = st.text_input("Endereço *", placeholder="Ex: Rua Itaipu 760")
-            itens_ind = st.text_input("Produtos do Pedido (Opcional - calcula pacotes sozinho)", placeholder="Ex: 1g granola, 5g amendoim")
-        with col_f2:
-            vend_ind = st.text_input("Sigla do Vendedor [ ] (Opcional)", placeholder="Ex: 2L")
-            pct_manual = st.number_input("Nº de Pacotes (se não digitar produtos)", min_value=1, max_value=10, value=1, step=1)
-            obs_ind = st.text_input("Observação ( ) (Opcional)", placeholder="Ex: TROCA")
-            pos_ind = st.selectbox("Posição na Rota", ["Normal", "PRIMEIRO", "ÚLTIMO"])
-
-        submitted_ind = st.form_submit_button("➕ Adicionar Cliente à Lista", type="primary", use_container_width=True)
-        if submitted_ind:
-            if not nome_ind.strip() or not end_ind.strip():
-                st.error("⚠️ Preencha pelo menos o Nome do Cliente e o Endereço.")
+)
+vendedor_lote = st.text_input(
+    "Sigla do Vendedor `[ ]` para os pedidos acima:",
+    placeholder="Ex: 2T, VG, NK"
+)
+if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True):
+    if texto_pedidos.strip():
+        with st.spinner("Extraindo pedidos e buscando CEPs e Bairros..."):
+            df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
+            if not df_extraidos.empty:
+                adicionar_pedidos_na_sessao(df_extraidos)
+                st.success(f"✅ {len(df_extraidos)} pedido(s) adicionado(s) à lista!")
             else:
-                with st.spinner("Buscando CEP e Bairro do endereço..."):
-                    end_comp, status_ind, lat_ind, lon_ind = buscar_endereco_completo(end_ind)
-                    if itens_ind.strip():
-                        qtd_pct_ind = calcular_pacotes([itens_ind], locais_config)
-                    else:
-                        qtd_pct_ind = pct_manual
-
-                    novo_df = pd.DataFrame([{
-                        "Excluir": False,
-                        "Status": status_ind,
-                        "Cliente": nome_ind.strip().upper(),
-                        "Vendedor": vend_ind.strip().upper(),
-                        "Pacotes": qtd_pct_ind,
-                        "Observacao": obs_ind.strip().upper(),
-                        "Posicao": pos_ind,
-                        "Endereco": end_comp,
-                        "Itens_Lidos": itens_ind.strip(),
-                        "Lat": lat_ind,
-                        "Lon": lon_ind
-                    }])
-                    adicionar_pedidos_na_sessao(novo_df)
-                    st.success(f"✅ Cliente {nome_ind.upper()} adicionado à lista!")
+                st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
+    else:
+        st.warning("Cole pelo menos um pedido antes de clicar em adicionar.")
 
 # --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO ---
 if not st.session_state["df_pedidos"].empty:
@@ -531,7 +484,7 @@ if not st.session_state["df_pedidos"].empty:
 
     with col_acao2:
         qtd_marcados = int(df_editado["Excluir"].sum()) if "Excluir" in df_editado.columns else 0
-        texto_btn_excluir = f"🗑️ Excluir Selecionados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Marcados"
+        texto_btn_excluir = f"🗑️ Excluir Marcados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Marcados"
         if st.button(texto_btn_excluir, use_container_width=True):
             if qtd_marcados > 0:
                 df_restante = df_editado[~df_editado["Excluir"]].copy()
