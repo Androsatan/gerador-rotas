@@ -91,7 +91,6 @@ PREFIXOS_RUA = (
     "praca ", "praça ", "travessa ", "tv. ", "beco ", "rodovia ", "estrada ", "anel "
 )
 
-# Palavras que nunca são nomes de ruas (evita confundir "Pacote 1;" com endereço)
 PALAVRAS_NAO_ENDERECO = (
     "pacote", "pct", "pedido", "ped", "item", "itens", "kit", "combo",
     "sacola", "parte", "caixa", "obs", "observacao", "total", "valor",
@@ -225,62 +224,43 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
 
 
 def eh_subtitulo_ou_divisoria(linha: str) -> bool:
-    """
-    Detecta linhas organizacionais dentro do pedido do mesmo cliente,
-    como 'Pacote 1;', 'Pacote 2:', 'Pedido 1', 'Itens:', '---'.
-    """
     limpa = remover_acentos(linha.strip().lower())
     if not limpa:
         return True
-    # Apenas traços ou pontuação
     if re.match(r"^[-=_*.;:]+$", limpa):
         return True
-    # Começa com Pacote 1, Pct 2, Pedido 1, Parte 1, Item 1, Kit 1, Sacola 1...
     if re.match(r"^(pacote|pct|pedido|ped|item|itens|kit|combo|sacola|parte|caixa|produtos?|lista)\b\s*\d*\s*[;:.-]*$", limpa):
         return True
     return False
 
 
 def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
-    """
-    Diferencia com precisão um endereço real de linhas como 'Pacote 1;',
-    produtos ('10g skunk', '10 amnesia haze') ou observações.
-    """
     bruta = linha.strip()
     linha_limpa = remover_acentos(bruta.lower())
     if not linha_limpa:
         return False
 
-    # 1. Nunca é endereço se for subtítulo ('Pacote 1;', 'Pedido 2:') ou terminar com ';' ou ':'
     if eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";") or bruta.endswith(":"):
         return False
 
-    # 2. Nunca é endereço se começar com palavras de controle/pacote
     for pal_proibida in PALAVRAS_NAO_ENDERECO:
         if re.match(rf"^{pal_proibida}\b", linha_limpa):
             return False
 
-    # 3. Se começar com rótulo explícito de endereço (ex: 'Endereço: ...', 'End: ...')
     if re.match(r"^(endereco|end\.?|local|entrega)\s*[:\-]", linha_limpa):
         return True
 
-    # 4. Se começar com número (ex: '10g skunk', '1@ byd', '5 uva', '10 amnesia'), é produto!
     if re.match(r"^\d+", linha_limpa):
         return False
 
-    # 5. Se começar com prefixo claro de via ('Rua ', 'Av ', 'Avenida ', 'Alameda ', etc.)
     if linha_limpa.startswith(PREFIXOS_RUA):
         return True
 
-    # 6. Caso não tenha 'Rua'/'Av' no início (ex: 'Batista Carneiro 112 Salgado Filho'):
-    # Verifica se contém unidades de produto coladas em número (ex: 'skunk 10g', 'colombia 5g', '1@')
     if re.search(r"\b\d+\s*(g|gr|kg|ml|un|pct|x|@)\b", linha_limpa) or "@" in linha_limpa:
         return False
 
-    # Verifica se a linha tem nome de via (mínimo 4 letras) seguido de número de imóvel
     if re.search(r"[a-z]{4,}\s*,?\s*\d{1,5}\b", linha_limpa):
         palavras_sem_num = re.findall(r"[a-z]{2,}", linha_limpa)
-        # Endereço sem 'Rua/Av' precisa ter pelo menos 2 palavras (ex: nome da rua + bairro ou nome composto)
         if len(palavras_sem_num) >= 2:
             return True
 
@@ -288,7 +268,6 @@ def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
 
 
 def eh_complemento_pos_endereco(linha: str) -> bool:
-    """Detecta se a linha seguinte ao endereço ainda faz parte dele (ex: CEP ou Bairro separado)."""
     limpa = remover_acentos(linha.strip().lower())
     if not limpa:
         return False
@@ -300,21 +279,18 @@ def eh_complemento_pos_endereco(linha: str) -> bool:
 
 
 def pode_ser_nome_cliente(linha: str) -> bool:
-    """Garante que uma linha de produto ou 'Pacote 1;' nunca vire nome de cliente."""
     bruta = linha.strip()
     limpa = remover_acentos(bruta.lower())
     if not limpa:
         return False
     if eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";"):
         return False
-    # Nome de cliente não começa com quantidade/número (ex: '10g', '1@', '5 ')
     if re.match(r"^\d+", limpa):
         return False
     return True
 
 
 def separar_componentes_endereco(endereco_bruto: str):
-    # Remove rótulos como "Endereço:" caso existam
     end_limpo = re.sub(r"^(endereco|end\.?|local|entrega)\s*[:\-]\s*", "", endereco_bruto.strip(), flags=re.IGNORECASE)
     cidade_detectada = detectar_cidade_rmbh(end_limpo)
 
@@ -548,8 +524,7 @@ def buscar_endereco_completo(endereco_bruto: str):
     except Exception:
         pass
 
-    # 3. Se o ArcGIS achou o CEP (mesmo quando a rua estava com erro de digitação, ex: 'brandoa'),
-    # consulta o CEP no ViaCEP para obter o nome oficial perfeito da rua e do bairro!
+    # 3. Se o ArcGIS achou o CEP, consulta o CEP no ViaCEP para obter o nome oficial da rua e do bairro
     if cep_encontrado:
         cep_digitos = re.sub(r"\D", "", cep_encontrado)
         if len(cep_digitos) == 8:
@@ -664,11 +639,7 @@ def validar_e_geocodificar_partida(texto_partida: str):
 
 
 def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
-    """
-    Extrator universal tolerante a subdivisões ('Pacote 1;', 'Pacote 2;'),
-    linhas em branco, rótulos ('Cliente:', 'Endereço:') e complementos.
-    """
-    linhas_ cruas = [l.strip() for l in texto_bruto.splitlines() if l.strip()]
+    linhas_cruas = [l.strip() for l in texto_bruto.splitlines() if l.strip()]
 
     pedidos = []
     nome_atual = None
@@ -680,12 +651,10 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
     while i < total_linhas:
         linha = linhas_cruas[i]
 
-        # Ignora linhas que são apenas divisórias ou cabeçalhos de pacotes ('Pacote 1;', 'Pacote 2;')
         if eh_subtitulo_ou_divisoria(linha):
             i += 1
             continue
 
-        # Caso ainda não tenhamos o nome do cliente do bloco atual
         if nome_atual is None:
             if pode_ser_nome_cliente(linha) and not eh_linha_endereco(linha, locais_dict):
                 nome_limpo = re.sub(r"^(cliente|nome)\s*[:\-]\s*", "", linha, flags=re.IGNORECASE).strip()
@@ -694,11 +663,9 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
             i += 1
             continue
 
-        # Se já temos um cliente aberto, verifica se a linha atual é o endereço final dele
         if eh_linha_endereco(linha, locais_dict):
             texto_endereco = linha
 
-            # Se a linha seguinte for complemento direto do endereço (ex: CEP ou 'Bairro X'), junta ao endereço
             while (i + 1) < total_linhas and eh_complemento_pos_endereco(linhas_cruas[i + 1]):
                 texto_endereco += f", {linhas_cruas[i + 1]}"
                 i += 1
@@ -725,7 +692,6 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
             nome_atual = None
             itens_atuais = []
         else:
-            # É linha de produto do cliente atual
             itens_atuais.append(linha)
 
         i += 1
