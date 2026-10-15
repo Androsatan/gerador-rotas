@@ -1,9 +1,11 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import requests
 import re
 import json
 import os
+import math
 import unicodedata
 from difflib import SequenceMatcher
 from urllib.parse import quote
@@ -13,7 +15,6 @@ st.set_page_config(page_title="Gerador de Rotas", page_icon="🛵", layout="wide
 # CSS reforçado: impede "..." dentro dos botões e empilha colunas em janelas reduzidas
 st.markdown("""
 <style>
-/* Botão externo */
 div.stButton > button,
 div.stFormSubmitButton > button {
     white-space: normal !important;
@@ -24,7 +25,6 @@ div.stFormSubmitButton > button {
     padding: 0.5rem 0.6rem !important;
 }
 
-/* Elementos internos do botão (onde o Streamlit aplica o "...") */
 div.stButton > button *,
 div.stFormSubmitButton > button * {
     white-space: normal !important;
@@ -36,13 +36,11 @@ div.stFormSubmitButton > button * {
     text-align: center !important;
 }
 
-/* Quebra de linha automática na caixa de prévia de código */
 pre, code {
     white-space: pre-wrap !important;
     word-break: break-word !important;
 }
 
-/* Quando a janela estiver reduzida, empilha as colunas para os botões ficarem largos */
 @media (max-width: 980px) {
     div[data-testid="stHorizontalBlock"] {
         flex-wrap: wrap !important;
@@ -71,8 +69,9 @@ PREFIXOS_RUA = (
     "praca ", "praça ", "travessa ", "tv. ", "beco ", "rodovia ", "estrada ", "anel "
 )
 
-# Palavras ignoradas ao separar produtos compostos (ex: "castanha do para" -> "castanha", "para")
 STOPWORDS_PRODUTOS = {"de", "do", "da", "dos", "das", "com", "sem", "e", "ou", "a", "o", "un", "pct", "gr", "kg", "ml"}
+
+CORES_ROTAS = ["#e63946", "#2a9d8f", "#3a86ff", "#ff9f1c"]
 
 
 # ================= FUNÇÕES DE CONFIGURAÇÃO (SALVAR PRODUTOS) =================
@@ -108,43 +107,26 @@ def remover_acentos(texto: str) -> str:
 
 
 def extrair_palavras_item(texto_linha: str) -> list:
-    """Extrai as palavras úteis de uma linha de pedido, removendo quantidades como '5g', '10', '2x'."""
     limpo = remover_acentos(texto_linha.lower())
-    # Remove números colados em unidades no início ou meio (ex: 5g, 100gr, 2x, 10)
     limpo = re.sub(r"\b\d+\s*(g|gr|kg|ml|l|un|pct|x)?\b", " ", limpo)
     palavras = re.findall(r"[a-z0-9@]+", limpo)
     return [p for p in palavras if p not in STOPWORDS_PRODUTOS and len(p) >= 2]
 
 
 def similaridade_palavras(palavra_cliente: str, palavra_cadastro: str) -> float:
-    """
-    Calcula o quão parecida é a palavra escrita pelo cliente com a palavra cadastrada no Local.
-    Retorna de 0.0 a 1.0 (aceita abreviações como 'amendo' -> 'amendoa' e erros de digitação).
-    """
     if palavra_cliente == palavra_cadastro:
         return 1.0
-
-    # Caso uma seja abreviação/radical da outra (ex: 'amendo' e 'amendoa', 'pren' e 'prensado')
     menor, maior = sorted([palavra_cliente, palavra_cadastro], key=len)
     if len(menor) >= 3 and maior.startswith(menor):
         return 0.90
-
-    # Caso tenha erro de digitação (ex: 'amedoa' vs 'amendoa', 'skank' vs 'skunk', 'colobia' vs 'colombia')
     if len(palavra_cliente) >= 3 and len(palavra_cadastro) >= 3:
-        ratio = SequenceMatcher(None, palavra_cliente, palavra_cadastro).ratio()
-        return ratio
-
+        return SequenceMatcher(None, palavra_cliente, palavra_cadastro).ratio()
     return 0.0
 
 
 def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
-    """
-    Analisa todas as linhas de produtos do pedido (mesmo com erros de digitação ou nomes parciais)
-    e retorna (quantidade_de_pacotes, lista_de_locais_acionados).
-    """
     locais_acionados = set()
 
-    # Pré-processa o vocabulário de cada local de saída
     vocab_locais = {}
     for nome_local, lista_prods in locais_dict.items():
         frases_e_palavras = []
@@ -152,7 +134,6 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
             prod_norm = remover_acentos(prod.strip().lower())
             if not prod_norm:
                 continue
-            # Palavras-chave individuais do produto (ex: 'castanha do para' -> ['castanha', 'para'])
             palavras_prod = [
                 p for p in re.findall(r"[a-z0-9@]+", prod_norm)
                 if p not in STOPWORDS_PRODUTOS
@@ -165,7 +146,6 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
         if not linha_norm:
             continue
 
-        # 1. Verifica símbolos especiais ou frase exata (ex: '@' em '10@')
         local_encontrado_direto = False
         for nome_local, lista_fp in vocab_locais.items():
             for frase_completa, _ in lista_fp:
@@ -179,7 +159,6 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
         if local_encontrado_direto:
             continue
 
-        # 2. Busca por palavras parciais (ex: 'para' em 'castanha do para') ou aproximadas (ex: 'amendo' -> 'amendoa')
         palavras_cliente = extrair_palavras_item(linha_norm)
         melhor_local_linha = None
         maior_nota_linha = 0.0
@@ -196,7 +175,6 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
                             maior_nota_palavra = nota
                             melhor_local_palavra = nome_local
 
-            # Nota >= 0.74 pega erros de digitação e abreviações sem confundir palavras aleatórias
             if maior_nota_palavra >= 0.74 and maior_nota_palavra > maior_nota_linha:
                 maior_nota_linha = maior_nota_palavra
                 melhor_local_linha = melhor_local_palavra
@@ -213,12 +191,10 @@ def eh_linha_endereco(linha: str) -> bool:
     linha_limpa = remover_acentos(linha.strip().lower())
     if not linha_limpa:
         return False
-    # Se começa com número (ex: '5g amendo', '10@', '1 castanha'), é produto e não endereço
     if re.match(r"^\d+", linha_limpa):
         return False
     if linha_limpa.startswith(PREFIXOS_RUA):
         return True
-    # Nome de rua seguido de número do imóvel (ex: 'Batista Carneiro 112 Salgado Filho')
     if re.search(r"[a-zA-Z]{3,}\s*,?\s*\d+", linha_limpa):
         return True
     return False
@@ -256,10 +232,31 @@ def separar_componentes_endereco(endereco_bruto: str):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def geocodificar_ponto(endereco_texto: str):
+    """Obtém (lat, lon) de qualquer endereço ou ponto de partida em BH/RMBH."""
+    try:
+        query_geo = f"{endereco_texto}, Minas Gerais, Brasil"
+        url_arcgis = (
+            "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
+            f"?SingleLine={quote(query_geo)}&maxLocations=1&f=json"
+        )
+        resp = requests.get(url_arcgis, timeout=5)
+        if resp.status_code == 200:
+            cands = resp.json().get("candidates", [])
+            if cands:
+                return float(cands[0]["location"]["y"]), float(cands[0]["location"]["x"])
+    except Exception:
+        pass
+    # Coordenada padrão (Bairro Maria Goretti / Região Nordeste BH) caso falhe a rede
+    return -19.8825, -43.9165
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def buscar_endereco_completo(endereco_bruto: str):
     if not str(endereco_bruto).strip():
         return "", "❌ NÃO ENCONTRADO - CORRIGIR", None, None
 
+    # Caso já esteja no formato completo com CEP (ex: rebusca após edição), preserva dados
     rua, numero, bairro_dica, cidade = separar_componentes_endereco(str(endereco_bruto))
     rua_sem_prefixo = re.sub(
         r"^(rua|r\.|r|avenida|av\.|av|alameda|al\.|praca|praça|travessa|beco)\s+",
@@ -309,8 +306,8 @@ def buscar_endereco_completo(endereco_bruto: str):
             cands = resp_geo.json().get("candidates", [])
             if cands and cands[0].get("score", 0) >= 75:
                 melhor = cands[0]
-                lat = melhor["location"]["y"]
-                lon = melhor["location"]["x"]
+                lat = float(melhor["location"]["y"])
+                lon = float(melhor["location"]["x"])
                 atrib = melhor.get("attributes", {})
 
                 if not bairro_oficial and atrib.get("Nbrhd"):
@@ -339,7 +336,7 @@ def buscar_endereco_completo(endereco_bruto: str):
         except Exception:
             pass
 
-    if not logradouro_oficial and not lat:
+    if not logradouro_oficial and lat is None:
         return endereco_bruto, "❌ NÃO ENCONTRADO - CORRIGIR", None, None
 
     nome_via_final = logradouro_oficial if logradouro_oficial else rua.title()
@@ -355,6 +352,10 @@ def buscar_endereco_completo(endereco_bruto: str):
         partes_end.append(cep_encontrado)
 
     endereco_padronizado = ", ".join(partes_end)
+
+    # Se achou no ViaCEP mas faltou coordenada no primeiro passe, geocodifica o endereço padronizado
+    if lat is None or lon is None:
+        lat, lon = geocodificar_ponto(endereco_padronizado)
 
     if not cep_encontrado or bairro_final == "Bairro não identificado":
         status = "⚠️ INCOMPLETO (CONFERIR BAIRRO/CEP)"
@@ -376,7 +377,6 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
             nome_atual = linha.upper().strip()
             itens_atuais = []
         else:
-            # Se for endereço, fecha o pedido atual e calcula os pacotes com tolerância a erros
             if eh_linha_endereco(linha):
                 qtd_pct, locais_detectados = identificar_locais_dos_itens(itens_atuais, locais_dict)
                 end_completo, status, lat, lon = buscar_endereco_completo(linha)
@@ -421,7 +421,7 @@ def montar_linha_cliente(row) -> str:
     partes = [str(row["Cliente"]).strip().upper()]
 
     vend = str(row.get("Vendedor", "")).strip().upper()
-    if vend and vend != "NONE" and vend != "NAN":
+    if vend and vend not in ("NONE", "NAN"):
         partes.append(f"[{vend}]")
 
     try:
@@ -432,10 +432,383 @@ def montar_linha_cliente(row) -> str:
         partes.append(f"({pct}PCT)")
 
     obs = str(row.get("Observacao", "")).strip().upper()
-    if obs and obs != "NONE" and obs != "NAN":
+    if obs and obs not in ("NONE", "NAN"):
         partes.append(f"({obs})")
 
     return " ".join(partes)
+
+
+# ================= MOTOR MATEMÁTICO DE DIVISÃO E OTIMIZAÇÃO DE ROTAS =================
+def distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calcula a distância em km entre duas coordenadas."""
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def dividir_pedidos_por_cota(df: pd.DataFrame, nomes_rotas: list, cotas_rotas: list, lat_saida: float, lon_saida: float) -> list:
+    """
+    Agrupa os pedidos geograficamente respeitando EXATAMENTE o número de pedidos (cotas)
+    definido pelo usuário para cada rota. Se faltar pedido em uma região, puxa o pedido
+    mais próximo da região vizinha.
+    """
+    n = len(df)
+    k = len(nomes_rotas)
+    if k <= 1 or n <= 1:
+        return [nomes_rotas[0]] * n
+
+    # Coordenadas válidas para todos os pontos
+    coords = []
+    for _, row in df.iterrows():
+        lat = row.get("Lat")
+        lon = row.get("Lon")
+        if pd.isna(lat) or pd.isna(lon) or lat is None or lon is None:
+            lat, lon = geocodificar_ponto(str(row.get("Endereco", "")))
+        coords.append((float(lat), float(lon)))
+
+    # 1. Inicializa os centros das K rotas espalhados por ângulo ao redor do Ponto de Partida
+    angulos = []
+    for idx, (lat, lon) in enumerate(coords):
+        ang = math.atan2(lat - lat_saida, lon - lon_saida)
+        angulos.append((ang, idx))
+    angulos.sort()
+
+    centros = []
+    for r_idx in range(k):
+        pos_escolhida = int((r_idx + 0.5) * n / k)
+        pos_escolhida = min(max(0, pos_escolhida), n - 1)
+        centros.append(coords[angulos[pos_escolhida][1]])
+
+    # 2. Alocação inicial respeitando as cotas exatas de cada rota
+    atribuicao = [-1] * n
+    vagas = list(cotas_rotas)
+
+    # Prioriza pontos que estão muito longe das outras rotas (maior diferença entre 1ª e 2ª rota mais próxima)
+    ordem_prioridade = []
+    for i, (lat, lon) in enumerate(coords):
+        dists = sorted([distancia_km(lat, lon, c[0], c[1]) for c in centros])
+        penalidade = (dists[1] - dists[0]) if len(dists) > 1 else dists[0]
+        ordem_prioridade.append((-penalidade, i))
+    ordem_prioridade.sort()
+
+    for _, idx_ponto in ordem_prioridade:
+        lat, lon = coords[idx_ponto]
+        opcoes = sorted(
+            [(distancia_km(lat, lon, centros[r][0], centros[r][1]), r) for r in range(k) if vagas[r] > 0]
+        )
+        rota_escolhida = opcoes[0][1]
+        atribuicao[idx_ponto] = rota_escolhida
+        vagas[rota_escolhida] -= 1
+
+    # 3. Refinamento por Troca (Swap Optimization): troca pedidos entre rotas na fronteira
+    # sempre que isso deixar as regiões mais compactas, mantendo a quantidade exata de pedidos!
+    for _ in range(40):
+        # Recalcula o centro geográfico de cada rota
+        novos_centros = []
+        for r in range(k):
+            pts_r = [coords[i] for i in range(n) if atribuicao[i] == r]
+            if pts_r:
+                novos_centros.append((
+                    sum(p[0] for p in pts_r) / len(pts_r),
+                    sum(p[1] for p in pts_r) / len(pts_r)
+                ))
+            else:
+                novos_centros.append(centros[r])
+        centros = novos_centros
+
+        melhorou = False
+        for i in range(n):
+            for j in range(i + 1, n):
+                ri, rj = atribuicao[i], atribuicao[j]
+                if ri != rj:
+                    custo_atual = (
+                        distancia_km(coords[i][0], coords[i][1], centros[ri][0], centros[ri][1]) ** 2 +
+                        distancia_km(coords[j][0], coords[j][1], centros[rj][0], centros[rj][1]) ** 2
+                    )
+                    custo_troca = (
+                        distancia_km(coords[i][0], coords[i][1], centros[rj][0], centros[rj][1]) ** 2 +
+                        distancia_km(coords[j][0], coords[j][1], centros[ri][0], centros[ri][1]) ** 2
+                    )
+                    if custo_troca + 1e-6 < custo_atual:
+                        atribuicao[i], atribuicao[j] = rj, ri
+                        melhorou = True
+        if not melhorou:
+            break
+
+    # Ordena o índice das rotas pela proximidade média ao ponto de partida para ficar consistente
+    return [nomes_rotas[r] for r in atribuicao]
+
+
+def obter_matriz_osrm(pontos_lat_lon: list):
+    """
+    Consulta o servidor gratuito OSRM para obter a matriz real de tempo/distância de rua
+    entre o Ponto de Partida (índice 0) e todos os clientes da rota.
+    """
+    m = len(pontos_lat_lon)
+    try:
+        coords_str = ";".join([f"{lon:.6f},{lat:.6f}" for lat, lon in pontos_lat_lon])
+        url = f"http://router.project-osrm.org/table/v1/driving/{coords_str}?annotations=duration,distance"
+        resp = requests.get(url, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("code") == "Ok" and "durations" in data:
+                durations = data["durations"]
+                distances = data.get("distances", durations)
+                return durations, distances
+    except Exception:
+        pass
+
+    # Fallback: distância de rua estimada caso o servidor OSRM oscile
+    matriz_dist = [[0.0] * m for _ in range(m)]
+    for i in range(m):
+        for j in range(m):
+            if i != j:
+                d_km = distancia_km(
+                    pontos_lat_lon[i][0], pontos_lat_lon[i][1],
+                    pontos_lat_lon[j][0], pontos_lat_lon[j][1]
+                ) * 1.35
+                matriz_dist[i][j] = d_km * 1000.0
+    return matriz_dist, matriz_dist
+
+
+def otimizar_sequencia_grupo(indices_grupo: list, nodo_anterior: int, matriz_custo: list) -> list:
+    """
+    Encontra a melhor sequência rua a rua para um grupo de paradas partindo de `nodo_anterior`,
+    usando Vizinho Mais Próximo + Refinamento 2-Opt.
+    """
+    if len(indices_grupo) <= 1:
+        return list(indices_grupo)
+
+    restantes = set(indices_grupo)
+    rota = []
+    atual = nodo_anterior
+
+    while restantes:
+        prox = min(restantes, key=lambda x: matriz_custo[atual][x] if matriz_custo[atual][x] is not None else 1e9)
+        rota.append(prox)
+        restantes.remove(prox)
+        atual = prox
+
+    # Refinamento 2-Opt para eliminar cruzamentos de ruas
+    melhorou = True
+    n_r = len(rota)
+    while melhorou:
+        melhorou = False
+        for i in range(n_r - 1):
+            for j in range(i + 1, n_r):
+                nova_rota = rota[:i] + rota[i:j + 1][::-1] + rota[j + 1:]
+
+                def custo_sequencia(seq):
+                    c = matriz_custo[nodo_anterior][seq[0]]
+                    for k in range(len(seq) - 1):
+                        c += matriz_custo[seq[k]][seq[k + 1]]
+                    return c
+
+                if custo_sequencia(nova_rota) + 1e-4 < custo_sequencia(rota):
+                    rota = nova_rota
+                    melhorou = True
+
+    return rota
+
+
+def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: float):
+    """
+    Calcula a melhor ordem de entrega para os pedidos de uma rota partindo do Ponto de Partida,
+    respeitando quem está marcado como PRIMEIRO e quem está marcado como ÚLTIMO.
+    Retorna: (df_rota_ordenado, km_total)
+    """
+    if df_rota.empty:
+        return df_rota, 0.0
+
+    df_trab = df_rota.copy().reset_index(drop=True)
+
+    # Ponto 0 é o Ponto de Partida; Pontos 1..M são os clientes
+    pontos = [(lat_saida, lon_saida)]
+    for idx, row in df_trab.iterrows():
+        lat, lon = row.get("Lat"), row.get("Lon")
+        if pd.isna(lat) or pd.isna(lon) or lat is None or lon is None:
+            lat, lon = geocodificar_ponto(str(row.get("Endereco", "")))
+            df_trab.at[idx, "Lat"] = lat
+            df_trab.at[idx, "Lon"] = lon
+        pontos.append((float(lat), float(lon)))
+
+    matriz_tempo, matriz_metros = obter_matriz_osrm(pontos)
+
+    # Separa índices (1..M) em PRIMEIRO, Normal e ÚLTIMO
+    primeiros = []
+    normais = []
+    ultimos = []
+
+    for idx, row in df_trab.iterrows():
+        nodo_osrm = idx + 1
+        pos = str(row.get("Posicao", "Normal")).upper().strip()
+        if pos == "PRIMEIRO":
+            primeiros.append(nodo_osrm)
+        elif pos in ("ÚLTIMO", "ULTIMO"):
+            ultimos.append(nodo_osrm)
+        else:
+            normais.append(nodo_osrm)
+
+    sequencia_final = []
+    nodo_atual = 0  # Começa no Ponto de Partida
+
+    if primeiros:
+        seq_p = otimizar_sequencia_grupo(primeiros, nodo_atual, matriz_tempo)
+        sequencia_final.extend(seq_p)
+        nodo_atual = seq_p[-1]
+
+    if normais:
+        seq_n = otimizar_sequencia_grupo(normais, nodo_atual, matriz_tempo)
+        # Se houver cliente fixado como ÚLTIMO, verifica se algum ajuste 2-opt melhora a chegada no ÚLTIMO
+        if ultimos and len(seq_n) >= 2:
+            alvo_final = ultimos[0]
+            melhorou = True
+            while melhorou:
+                melhorou = False
+                for i in range(len(seq_n) - 1):
+                    for j in range(i + 1, len(seq_n)):
+                        tentativa = seq_n[:i] + seq_n[i:j + 1][::-1] + seq_n[j + 1:]
+
+                        def custo_com_fim(seq):
+                            c = matriz_tempo[nodo_atual][seq[0]]
+                            for k in range(len(seq) - 1):
+                                c += matriz_tempo[seq[k]][seq[k + 1]]
+                            c += matriz_tempo[seq[-1]][alvo_final]
+                            return c
+
+                        if custo_com_fim(tentativa) + 1e-4 < custo_com_fim(seq_n):
+                            seq_n = tentativa
+                            melhorou = True
+
+        sequencia_final.extend(seq_n)
+        nodo_atual = seq_n[-1]
+
+    if ultimos:
+        seq_u = otimizar_sequencia_grupo(ultimos, nodo_atual, matriz_tempo)
+        sequencia_final.extend(seq_u)
+
+    # Calcula quilometragem total da rota
+    metros_totais = 0.0
+    ant = 0
+    for nodo in sequencia_final:
+        metros_totais += (matriz_metros[ant][nodo] or 0.0)
+        ant = nodo
+    km_total = round(metros_totais / 1000.0, 1)
+
+    indices_df = [nodo - 1 for nodo in sequencia_final]
+    df_ordenado = df_trab.iloc[indices_df].copy().reset_index(drop=True)
+    df_ordenado["Ordem"] = [f"{i + 1}º" for i in range(len(df_ordenado))]
+
+    return df_ordenado, km_total
+
+
+def recalcular_todas_as_rotas(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: list, endereco_partida: str):
+    """Recalcula a melhor sequência rua a rua para todas as rotas ativas."""
+    lat_s, lon_s = geocodificar_ponto(endereco_partida)
+    dfs_otimizados = []
+    resumo_km = {}
+
+    for nome_r in ordem_nomes_rotas:
+        sub_df = df_com_rotas[df_com_rotas["Rota"] == nome_r].copy()
+        if not sub_df.empty:
+            sub_otim, km_r = otimizar_rota_unica(sub_df, lat_s, lon_s)
+            dfs_otimizados.append(sub_otim)
+            resumo_km[nome_r] = km_r
+        else:
+            resumo_km[nome_r] = 0.0
+
+    if dfs_otimizados:
+        df_final = pd.concat(dfs_otimizados, ignore_index=True)
+    else:
+        df_final = df_com_rotas.copy()
+
+    return df_final, resumo_km, (lat_s, lon_s)
+
+
+def formatar_titulo_rota(nome: str) -> str:
+    limpo = nome.strip().upper()
+    if not limpo:
+        return "ROTA"
+    if not limpo.startswith("ROTA"):
+        return f"ROTA {limpo}"
+    return limpo
+
+
+def renderizar_mapa_rotas(df_rotas: pd.DataFrame, nomes_rotas: list, coord_partida: tuple, end_partida: str):
+    """Gera um mapa interativo Leaflet com pinos numerados e linhas coloridas por rota."""
+    lat_p, lon_p = coord_partida
+    marcadores_js = []
+    linhas_js = []
+
+    # Pino do Ponto de Partida
+    end_p_safe = str(end_partida).replace("'", "").replace('"', "")
+    marcadores_js.append(f"""
+        L.marker([{lat_p}, {lon_p}], {{
+            icon: L.divIcon({{
+                className: 'custom-pin',
+                html: '<div style="background:#111;color:#fff;border:2px solid #fff;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:15px;box-shadow:0 2px 5px rgba(0,0,0,0.5);">🏠</div>',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            }})
+        }}).addTo(map).bindPopup('<b>Ponto de Partida</b><br>{end_p_safe}');
+    """)
+
+    for r_idx, nome_r in enumerate(nomes_rotas):
+        cor = CORES_ROTAS[r_idx % len(CORES_ROTAS)]
+        sub = df_rotas[df_rotas["Rota"] == nome_r]
+        if sub.empty:
+            continue
+
+        pts_linha = [[lat_p, lon_p]]
+        for stop_idx, (_, row) in enumerate(sub.iterrows(), start=1):
+            lat, lon = row.get("Lat"), row.get("Lon")
+            if pd.isna(lat) or pd.isna(lon) or lat is None or lon is None:
+                continue
+            pts_linha.append([float(lat), float(lon)])
+            cliente_safe = montar_linha_cliente(row).replace("'", "").replace('"', "")
+            end_safe = str(row.get("Endereco", "")).replace("'", "").replace('"', "")
+            rota_safe = formatar_titulo_rota(nome_r).replace("'", "")
+
+            marcadores_js.append(f"""
+                L.marker([{float(lat)}, {float(lon)}], {{
+                    icon: L.divIcon({{
+                        className: 'custom-pin',
+                        html: '<div style="background:{cor};color:#fff;border:2px solid #fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:12px;box-shadow:0 2px 4px rgba(0,0,0,0.4);">{stop_idx}</div>',
+                        iconSize: [26, 26],
+                        iconAnchor: [13, 13]
+                    }})
+                }}).addTo(map).bindPopup('<b>{rota_safe} - {stop_idx}ª Parada</b><br>{cliente_safe}<br><small>{end_safe}</small>');
+            """)
+
+        linhas_js.append(f"""
+            L.polyline({json.dumps(pts_linha)}, {{color: '{cor}', weight: 4, opacity: 0.8}}).addTo(map);
+        """)
+
+    html_mapa = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    </head>
+    <body style="margin:0;padding:0;">
+        <div id="map" style="width:100%;height:420px;border-radius:10px;"></div>
+        <script>
+            var map = L.map('map').setView([{lat_p}, {lon_p}], 12);
+            L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+                attribution: '© OpenStreetMap'
+            }}).addTo(map);
+            {"".join(linhas_js)}
+            {"".join(marcadores_js)}
+        </script>
+    </body>
+    </html>
+    """
+    components.html(html_mapa, height=430)
 
 
 # ================= INICIALIZAÇÃO =================
@@ -443,6 +816,18 @@ config_salva = carregar_config()
 
 if "df_pedidos" not in st.session_state:
     st.session_state["df_pedidos"] = pd.DataFrame()
+
+if "df_rotas_calculadas" not in st.session_state:
+    st.session_state["df_rotas_calculadas"] = pd.DataFrame()
+
+if "nomes_rotas_ativas" not in st.session_state:
+    st.session_state["nomes_rotas_ativas"] = []
+
+if "resumo_km_rotas" not in st.session_state:
+    st.session_state["resumo_km_rotas"] = {}
+
+if "coord_partida_atual" not in st.session_state:
+    st.session_state["coord_partida_atual"] = (-19.8825, -43.9165)
 
 if "contador_form" not in st.session_state:
     st.session_state["contador_form"] = 0
@@ -517,7 +902,8 @@ if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True
 # --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO ---
 if not st.session_state["df_pedidos"].empty:
     st.divider()
-    st.subheader(f"2️⃣ Conferência dos Pedidos ({len(st.session_state['df_pedidos'])} na lista)")
+    total_pedidos = len(st.session_state["df_pedidos"])
+    st.subheader(f"2️⃣ Conferência dos Pedidos ({total_pedidos} na lista)")
 
     df_atual = st.session_state["df_pedidos"].copy()
     if "Excluir" not in df_atual.columns:
@@ -530,7 +916,7 @@ if not st.session_state["df_pedidos"].empty:
             "Corrija o endereço dando dois cliques na tabela abaixo."
         )
     else:
-        st.success(f"✅ Todos os {len(df_atual)} endereços foram localizados com Bairro e CEP!")
+        st.success(f"✅ Todos os {total_pedidos} endereços foram localizados com Bairro e CEP!")
 
     df_editado = st.data_editor(
         df_atual,
@@ -557,7 +943,7 @@ if not st.session_state["df_pedidos"].empty:
 
     df_editado["Cliente"] = df_editado["Cliente"].astype(str).str.upper()
 
-    # Se o usuário editou algum endereço na tabela, já busca o novo CEP automaticamente
+    # Se o usuário editou algum endereço na tabela, busca o novo CEP automaticamente
     endereco_mudou = False
     for idx in df_editado.index:
         if idx in df_atual.index and df_editado.at[idx, "Endereco"] != df_atual.at[idx, "Endereco"]:
@@ -572,7 +958,6 @@ if not st.session_state["df_pedidos"].empty:
     if endereco_mudou:
         st.rerun()
 
-    # Botões de ação responsivos
     col_acao1, col_acao2, col_acao3 = st.columns(3)
 
     with col_acao1:
@@ -599,6 +984,7 @@ if not st.session_state["df_pedidos"].empty:
                 df_restante = df_editado[~df_editado["Excluir"]].copy()
                 df_restante["Excluir"] = False
                 st.session_state["df_pedidos"] = df_restante.reset_index(drop=True)
+                st.session_state["df_rotas_calculadas"] = pd.DataFrame()
                 st.rerun()
             else:
                 st.toast("Marque a caixinha '🗑️' na tabela ao lado do cliente que deseja remover.")
@@ -606,10 +992,184 @@ if not st.session_state["df_pedidos"].empty:
     with col_acao3:
         if st.button("🧹 Limpar Lista", use_container_width=True):
             st.session_state["df_pedidos"] = pd.DataFrame()
+            st.session_state["df_rotas_calculadas"] = pd.DataFrame()
             st.rerun()
 
-    with st.expander("👀 Ver prévia dos pedidos", expanded=True):
-        linhas_previa = []
-        for _, row in df_editado.iterrows():
-            linhas_previa.append(f"{row['Endereco']}\n{montar_linha_cliente(row)}")
-        st.code("\n\n".join(linhas_previa), language="text", wrap_lines=True)
+    # --- PASSO 3: DIVISÃO E CÁLCULO DAS ROTAS ---
+    st.divider()
+    st.subheader("3️⃣ Dividir e Calcular Melhores Rotas")
+
+    qtd_rotas = st.radio(
+        "Em quantas rotas deseja dividir os pedidos?",
+        options=[1, 2, 3, 4],
+        index=1 if total_pedidos >= 2 else 0,
+        horizontal=True
+    )
+
+    # Sugestão inicial equilibrada da quantidade de pedidos para cada rota
+    base_por_rota = total_pedidos // qtd_rotas
+    sobra = total_pedidos % qtd_rotas
+    sugestoes_padrao = [base_por_rota + (1 if i < sobra else 0) for i in range(qtd_rotas)]
+    nomes_sugeridos = ["ROTA FP", "ROTA LE", "ROTA 3", "ROTA 4"]
+
+    cols_rotas = st.columns(qtd_rotas)
+    nomes_escolhidos = []
+    cotas_escolhidas = []
+
+    for i in range(qtd_rotas):
+        with cols_rotas[i]:
+            nome_r = st.text_input(
+                f"Nome da Rota {i + 1}:",
+                value=nomes_sugeridos[i],
+                key=f"nome_rota_{i}_{qtd_rotas}"
+            )
+            cota_r = st.number_input(
+                f"Nº de Pedidos ({nome_r}):",
+                min_value=0,
+                max_value=total_pedidos,
+                value=sugestoes_padrao[i],
+                step=1,
+                key=f"cota_rota_{i}_{qtd_rotas}_{total_pedidos}"
+            )
+            nomes_escolhidos.append(formatar_titulo_rota(nome_r))
+            cotas_escolhidas.append(int(cota_r))
+
+    soma_cotas = sum(cotas_escolhidas)
+    if soma_cotas != total_pedidos:
+        diferenca = total_pedidos - soma_cotas
+        if diferenca > 0:
+            st.warning(f"⚠️ A soma das rotas está em **{soma_cotas}** pedidos, mas você tem **{total_pedidos}** na lista (faltam distribuir **{diferenca}**).")
+        else:
+            st.warning(f"⚠️ A soma das rotas está em **{soma_cotas}** pedidos, mas você só tem **{total_pedidos}** na lista (passou **{abs(diferenca)}**).")
+
+    if st.button("🚀 Gerar e Otimizar Rotas", type="primary", use_container_width=True, disabled=(soma_cotas != total_pedidos)):
+        with st.spinner("Agrupando regiões e calculando a melhor sequência rua a rua..."):
+            lat_s, lon_s = geocodificar_ponto(ponto_partida)
+            df_para_dividir = df_editado.copy().reset_index(drop=True)
+
+            # Garante nomes únicos para as rotas
+            nomes_unicos = []
+            for idx_n, nm in enumerate(nomes_escolhidos):
+                if nm in nomes_unicos:
+                    nm = f"{nm} ({idx_n + 1})"
+                nomes_unicos.append(nm)
+
+            rotas_atribuidas = dividir_pedidos_por_cota(
+                df_para_dividir,
+                nomes_unicos,
+                cotas_escolhidas,
+                lat_s,
+                lon_s
+            )
+            df_para_dividir["Rota"] = rotas_atribuidas
+
+            df_otimizado, resumo_km, coord_p = recalcular_todas_as_rotas(
+                df_para_dividir,
+                nomes_unicos,
+                ponto_partida
+            )
+
+            st.session_state["df_rotas_calculadas"] = df_otimizado
+            st.session_state["nomes_rotas_ativas"] = nomes_unicos
+            st.session_state["resumo_km_rotas"] = resumo_km
+            st.session_state["coord_partida_atual"] = coord_p
+            st.rerun()
+
+# --- PASSO 4: ROTAS PRONTAS, TROCA ENTRE ROTAS E TEXTO PARA COPIAR ---
+if not st.session_state["df_rotas_calculadas"].empty:
+    st.divider()
+    st.subheader("4️⃣ Rotas Otimizadas e Ajuste Entre Rotas")
+
+    df_rotas = st.session_state["df_rotas_calculadas"].copy()
+    nomes_ativas = st.session_state["nomes_rotas_ativas"]
+    resumo_km = st.session_state["resumo_km_rotas"]
+
+    st.caption(
+        "💡 **Quer passar um pedido de uma rota para outra ou mudar quem é o PRIMEIRO/ÚLTIMO?** "
+        "Basta alterar a coluna **'Rota'** ou **'Posição'** na tabela abaixo que o sistema recalcula a melhor ordem das rotas automaticamente!"
+    )
+
+    df_rotas_edit = st.data_editor(
+        df_rotas,
+        use_container_width=True,
+        hide_index=True,
+        column_order=["Rota", "Ordem", "Posicao", "Cliente", "Vendedor", "Pacotes", "Observacao", "Endereco"],
+        column_config={
+            "Rota": st.column_config.SelectboxColumn(
+                "🔄 Rota (Trocar)",
+                options=nomes_ativas,
+                required=True,
+                width="medium"
+            ),
+            "Ordem": st.column_config.TextColumn("Ordem", disabled=True, width="small"),
+            "Posicao": st.column_config.SelectboxColumn(
+                "Posição",
+                options=["Normal", "PRIMEIRO", "ÚLTIMO"],
+                required=True,
+                width="small"
+            ),
+            "Cliente": st.column_config.TextColumn("Cliente", width="medium"),
+            "Vendedor": st.column_config.TextColumn("Vend. [ ]", width="small"),
+            "Pacotes": st.column_config.NumberColumn("PCT", min_value=1, max_value=10, step=1, width="small"),
+            "Observacao": st.column_config.TextColumn("Obs ( )", width="small"),
+            "Endereco": st.column_config.TextColumn("Endereço", width="large"),
+        }
+    )
+
+    # Detecta se o usuário trocou algum pedido de rota ou alterou PRIMEIRO/ÚLTIMO e re-otimiza na hora
+    mudou_rota_ou_pos = (
+        not df_rotas_edit["Rota"].equals(df_rotas["Rota"]) or
+        not df_rotas_edit["Posicao"].equals(df_rotas["Posicao"])
+    )
+
+    if mudou_rota_ou_pos:
+        with st.spinner("Recalculando a melhor sequência das rotas após a alteração..."):
+            df_reotimizado, novo_km, coord_p = recalcular_todas_as_rotas(
+                df_rotas_edit,
+                nomes_ativas,
+                ponto_partida
+            )
+            st.session_state["df_rotas_calculadas"] = df_reotimizado
+            st.session_state["resumo_km_rotas"] = novo_km
+            st.session_state["coord_partida_atual"] = coord_p
+            st.rerun()
+    else:
+        df_rotas_edit["Cliente"] = df_rotas_edit["Cliente"].astype(str).str.upper()
+        st.session_state["df_rotas_calculadas"] = df_rotas_edit
+
+    # Mapa Visual Interativo
+    with st.expander("🗺️ Ver Mapa das Rotas (Pinos Numerados por Ordem de Entrega)", expanded=True):
+        renderizar_mapa_rotas(
+            st.session_state["df_rotas_calculadas"],
+            nomes_ativas,
+            st.session_state["coord_partida_atual"],
+            ponto_partida
+        )
+
+    # Blocos de Texto Prontos para Copiar (Idênticos aos prints)
+    st.markdown("### 📋 Textos Prontos para Copiar (WhatsApp / Telegram)")
+    st.caption("Clique no ícone de copiar no canto superior direito de cada caixa preta abaixo:")
+
+    cols_texto = st.columns(min(len(nomes_ativas), 2))
+
+    for idx_r, nome_r in enumerate(nomes_ativas):
+        sub_rota = st.session_state["df_rotas_calculadas"][
+            st.session_state["df_rotas_calculadas"]["Rota"] == nome_r
+        ]
+        col_atual = cols_texto[idx_r % len(cols_texto)]
+
+        with col_atual:
+            qtd_entregas = len(sub_rota)
+            total_pct_rota = int(sub_rota["Pacotes"].sum()) if not sub_rota.empty else 0
+            km_desta_rota = resumo_km.get(nome_r, 0.0)
+
+            st.markdown(
+                f"**{nome_r}** — `{qtd_entregas} entregas` | `{total_pct_rota} pacotes` | `~{km_desta_rota} km`"
+            )
+
+            blocos_paradas = [nome_r]
+            for _, row_p in sub_rota.iterrows():
+                blocos_paradas.append(f"{row_p['Endereco']}\n{montar_linha_cliente(row_p)}")
+
+            texto_final_rota = "\n\n".join(blocos_paradas)
+            st.code(texto_final_rota, language="text", wrap_lines=True)
