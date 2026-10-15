@@ -64,6 +64,28 @@ CIDADES_RMBH = [
     "mario campos", "sao jose da lapa", "confins", "esmeraldas", "raposos"
 ]
 
+MAPA_NOMES_CIDADES = {
+    "belo horizonte": "Belo Horizonte",
+    "sabara": "Sabará",
+    "nova lima": "Nova Lima",
+    "contagem": "Contagem",
+    "betim": "Betim",
+    "santa luzia": "Santa Luzia",
+    "ribeirao das neves": "Ribeirão das Neves",
+    "ibirite": "Ibirité",
+    "vespasiano": "Vespasiano",
+    "lagoa santa": "Lagoa Santa",
+    "pedro leopoldo": "Pedro Leopoldo",
+    "brumadinho": "Brumadinho",
+    "caete": "Caeté",
+    "sarzedo": "Sarzedo",
+    "mario campos": "Mário Campos",
+    "sao jose da lapa": "São José da Lapa",
+    "confins": "Confins",
+    "esmeraldas": "Esmeraldas",
+    "raposos": "Raposos"
+}
+
 PREFIXOS_RUA = (
     "rua ", "r. ", "r ", "av ", "av. ", "avenida ", "alameda ", "al. ",
     "praca ", "praça ", "travessa ", "tv. ", "beco ", "rodovia ", "estrada ", "anel "
@@ -72,9 +94,6 @@ PREFIXOS_RUA = (
 STOPWORDS_PRODUTOS = {"de", "do", "da", "dos", "das", "com", "sem", "e", "ou", "a", "o", "un", "pct", "gr", "kg", "ml"}
 
 CORES_ROTAS = ["#e63946", "#2a9d8f", "#3a86ff", "#ff9f1c"]
-
-# Coordenada exata do Bairro Maria Goretti (Região Nordeste de BH, ao lado do Santa Cruz)
-COORD_MARIA_GORETTI = (-19.8783, -43.9268)
 
 
 # ================= FUNÇÕES DE CONFIGURAÇÃO (SALVAR PRODUTOS) =================
@@ -107,6 +126,14 @@ def remover_acentos(texto: str) -> str:
         return ""
     nfkd = unicodedata.normalize("NFKD", str(texto))
     return "".join([c for c in nfkd if not unicodedata.combining(c)])
+
+
+def detectar_cidade_rmbh(texto: str) -> str:
+    texto_norm = remover_acentos(texto.lower())
+    for cid in CIDADES_RMBH:
+        if re.search(rf"\b{cid}\b", texto_norm):
+            return MAPA_NOMES_CIDADES.get(cid, cid.title())
+    return "Belo Horizonte"
 
 
 def extrair_palavras_item(texto_linha: str) -> list:
@@ -205,21 +232,7 @@ def eh_linha_endereco(linha: str) -> bool:
 
 def separar_componentes_endereco(endereco_bruto: str):
     end_limpo = endereco_bruto.strip()
-    end_norm = remover_acentos(end_limpo.lower())
-
-    cidade_detectada = "Belo Horizonte"
-    mapa_nomes_cidades = {
-        "sabara": "Sabará",
-        "ribeirao das neves": "Ribeirão das Neves",
-        "ibirite": "Ibirité",
-        "caete": "Caeté",
-        "mario campos": "Mário Campos",
-        "sao jose da lapa": "São José da Lapa"
-    }
-    for cid in CIDADES_RMBH:
-        if re.search(rf"\b{cid}\b", end_norm):
-            cidade_detectada = mapa_nomes_cidades.get(cid, cid.title())
-            break
+    cidade_detectada = detectar_cidade_rmbh(end_limpo)
 
     match_num = re.search(r"(?:,\s*|\s+)(\d+)\b(.*)$", end_limpo)
     if match_num:
@@ -234,54 +247,154 @@ def separar_componentes_endereco(endereco_bruto: str):
     return rua, numero, resto, cidade_detectada
 
 
+def dentro_perimetro_rmbh(lat: float, lon: float) -> bool:
+    """Garante que a coordenada encontrada está na Região Metropolitana de BH."""
+    return (-20.40 <= lat <= -19.40) and (-44.60 <= lon <= -43.40)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def geocodificar_ponto(endereco_texto: str):
+def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     """
-    Obtém (lat, lon) com precisão em BH e Região Metropolitana.
-    Reconhece bairros de BH (como Maria Goretti) sem confundir com ruas homônimas.
+    Busca exclusivamente um BAIRRO (suburb/neighbourhood) em BH e Região Metropolitana,
+    bloqueando resultados que sejam nomes de ruas (highway/StreetName) para nunca confundir
+    um bairro com uma rua de mesmo nome.
+    Retorna: (sucesso, descricao_validada, lat, lon)
     """
-    texto_norm = remover_acentos(str(endereco_texto).lower().strip())
+    bairro_alvo_norm = remover_acentos(nome_bairro_limpo.lower()).strip()
 
-    # 1. Caso seja o Bairro Maria Goretti (sem rua específica informada)
-    if "maria goretti" in texto_norm and not re.search(r"\b\d+\b", texto_norm):
-        return COORD_MARIA_GORETTI
-
-    # Remove a palavra "bairro" solta para não confundir geocodificadores em inglês
-    texto_limpo_busca = re.sub(r"\bbairro\b", "", str(endereco_texto), flags=re.IGNORECASE).strip(" ,-")
-
-    # 2. Tenta primeiro no Nominatim (OpenStreetMap Brasil - excelente para bairros e ruas de BH)
+    # 1. Tenta OpenStreetMap (Nominatim) filtrando apenas bairros/subdistritos (ignora 'highway')
     try:
-        q_nom = f"{texto_limpo_busca}, Minas Gerais, Brasil"
+        q_nom = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_nom = (
             f"https://nominatim.openstreetmap.org/search"
-            f"?q={quote(q_nom)}&format=json&limit=1&countrycodes=br"
-            f"&viewbox=-44.35,-19.60,-43.65,-20.20&bounded=1"
+            f"?q={quote(q_nom)}&format=jsonv2&addressdetails=1&limit=10&countrycodes=br"
         )
-        headers = {"User-Agent": "GeradorRotasBH/1.0"}
-        resp_nom = requests.get(url_nom, headers=headers, timeout=5)
-        if resp_nom.status_code == 200:
-            dados_nom = resp_nom.json()
-            if isinstance(dados_nom, list) and len(dados_nom) > 0:
-                return float(dados_nom[0]["lat"]), float(dados_nom[0]["lon"])
+        headers = {"User-Agent": "GeradorRotasRMBH/2.0 (contato@geradorrotas.app)"}
+        resp = requests.get(url_nom, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            resultados = resp.json()
+            for item in resultados:
+                cat = item.get("category", "")
+                tipo = item.get("type", "")
+                 end_det = item.get("address", {})
+
+                # Bloqueia ruas, avenidas ou estabelecimentos comerciais
+                if cat in ("highway", "amenity", "shop", "tourism", "building"):
+                    continue
+
+                lat_i = float(item["lat"])
+                lon_i = float(item["lon"])
+                if not dentro_perimetro_rmbh(lat_i, lon_i):
+                    continue
+
+                suburb = end_det.get("suburb") or end_det.get("neighbourhood") or end_det.get("quarter") or item.get("name", "")
+                suburb_norm = remover_acentos(suburb.lower())
+
+                if tipo in ("suburb", "neighbourhood", "quarter", "administrative", "city_district") or (
+                    bairro_alvo_norm in suburb_norm or suburb_norm in bairro_alvo_norm
+                ):
+                    regional = end_det.get("city_district") or end_det.get("municipality") or ""
+                    cid_item = end_det.get("city") or end_det.get("town") or cidade
+                    cep_item = end_det.get("postcode", "")
+                    detalhe = f"Bairro {suburb}"
+                    if regional and regional.lower() != suburb.lower():
+                        detalhe += f" ({regional})"
+                    detalhe += f", {cid_item}"
+                    if cep_item:
+                        detalhe += f" | CEP: {cep_item}"
+                    return True, detalhe, lat_i, lon_i
     except Exception:
         pass
 
-    # 3. Fallback: ArcGIS restrito à área de BH / Região Metropolitana
+    # 2. Tenta Photon (Komoot OpenStreetMap) filtrando apenas 'suburb' / 'neighbourhood' / 'district'
     try:
-        query_geo = f"{texto_limpo_busca}, Minas Gerais, Brasil"
+        q_photon = f"{nome_bairro_limpo} {cidade} Minas Gerais"
+        url_photon = f"https://photon.komoot.io/api/?q={quote(q_photon)}&lat=-19.9167&lon=-43.9345&limit=10"
+        resp_p = requests.get(url_photon, timeout=5)
+        if resp_p.status_code == 200:
+            features = resp_p.json().get("features", [])
+            for feat in features:
+                props = feat.get("properties", {})
+                osm_key = props.get("osm_key", "")
+                osm_val = props.get("osm_value", "")
+                if osm_key == "highway":
+                    continue
+                coords = feat.get("geometry", {}).get("coordinates", [])
+                if len(coords) == 2:
+                    lon_f, lat_f = float(coords[0]), float(coords[1])
+                    if dentro_perimetro_rmbh(lat_f, lon_f) and osm_val in (
+                        "suburb", "neighbourhood", "quarter", "district", "locality", "administrative"
+                    ):
+                        nome_f = props.get("name", nome_bairro_limpo.title())
+                        cid_f = props.get("city", cidade)
+                        return True, f"Bairro {nome_f}, {cid_f} - MG", lat_f, lon_f
+    except Exception:
+        pass
+
+    # 3. Tenta ArcGIS restrito estritamente à categoria 'Neighborhood,Locality' (proibido retornar ruas)
+    try:
+        q_arc = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
+        url_arc = (
+            "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
+            f"?SingleLine={quote(q_arc)}&category=Neighborhood,Locality,Subregion"
+            f"&searchExtent=-44.50,-20.30,-43.50,-19.50"
+            f"&outFields=Addr_type,PlaceName,Nbrhd,City,Postal&maxLocations=5&f=json"
+        )
+        resp_a = requests.get(url_arc, timeout=5)
+        if resp_a.status_code == 200:
+            cands = resp_a.json().get("candidates", [])
+            for c in cands:
+                if c.get("score", 0) >= 80:
+                    lat_a = float(c["location"]["y"])
+                    lon_a = float(c["location"]["x"])
+                    if dentro_perimetro_rmbh(lat_a, lon_a):
+                        atrib = c.get("attributes", {})
+                        nome_b = atrib.get("PlaceName") or atrib.get("Nbrhd") or nome_bairro_limpo.title()
+                        cid_a = atrib.get("City") or cidade
+                        return True, f"Bairro {nome_b}, {cid_a} - MG", lat_a, lon_a
+    except Exception:
+        pass
+
+    return False, "❌ Bairro não localizado em BH/Região. Confira a grafia ou digite uma rua/CEP.", None, None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def geocodificar_endereco_rua(endereco_completo_texto: str):
+    """Obtém (lat, lon) de uma rua/endereço específico já padronizado."""
+    # 1. Tenta ArcGIS restrito à Região Metropolitana de BH
+    try:
+        q_geo = f"{endereco_completo_texto}, Minas Gerais, Brasil"
         url_arcgis = (
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
-            f"?SingleLine={quote(query_geo)}&searchExtent=-44.35,-20.20,-43.65,-19.60&maxLocations=1&f=json"
+            f"?SingleLine={quote(q_geo)}&searchExtent=-44.50,-20.30,-43.50,-19.50&maxLocations=1&f=json"
         )
         resp = requests.get(url_arcgis, timeout=5)
         if resp.status_code == 200:
             cands = resp.json().get("candidates", [])
             if cands:
-                return float(cands[0]["location"]["y"]), float(cands[0]["location"]["x"])
+                lat = float(cands[0]["location"]["y"])
+                lon = float(cands[0]["location"]["x"])
+                if dentro_perimetro_rmbh(lat, lon):
+                    return lat, lon
     except Exception:
         pass
 
-    return COORD_MARIA_GORETTI
+    # 2. Fallback: Nominatim OpenStreetMap
+    try:
+        url_nom = (
+            f"https://nominatim.openstreetmap.org/search"
+            f"?q={quote(endereco_completo_texto + ', Minas Gerais, Brasil')}&format=json&limit=1"
+        )
+        headers = {"User-Agent": "GeradorRotasRMBH/2.0"}
+        resp_n = requests.get(url_nom, headers=headers, timeout=5)
+        if resp_n.status_code == 200:
+            dados = resp_n.json()
+            if dados:
+                return float(dados[0]["lat"]), float(dados[0]["lon"])
+    except Exception:
+        pass
+
+    return -19.9167, -43.9345
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -326,14 +439,14 @@ def buscar_endereco_completo(endereco_bruto: str):
         except Exception:
             pass
 
-    # 2. Consulta ArcGIS Geocoder usando o bairro oficial descoberto pelo ViaCEP para cravar o ponto certo
+    # 2. Consulta ArcGIS Geocoder usando o bairro oficial para cravar a coordenada certa
     rua_busca = logradouro_oficial if logradouro_oficial else rua
     bairro_busca = bairro_oficial if bairro_oficial else bairro_dica
     try:
         query_geo = f"{rua_busca}, {numero}, {bairro_busca}, {cidade_oficial}, Minas Gerais, Brasil"
         url_arcgis = (
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
-            f"?SingleLine={quote(query_geo)}&searchExtent=-44.35,-20.20,-43.65,-19.60"
+            f"?SingleLine={quote(query_geo)}&searchExtent=-44.50,-20.30,-43.50,-19.50"
             f"&outFields=StName,StType,AddNum,Nbrhd,City,Postal&maxLocations=1&f=json"
         )
         resp_geo = requests.get(url_arcgis, timeout=5)
@@ -341,18 +454,20 @@ def buscar_endereco_completo(endereco_bruto: str):
             cands = resp_geo.json().get("candidates", [])
             if cands and cands[0].get("score", 0) >= 75:
                 melhor = cands[0]
-                lat = float(melhor["location"]["y"])
-                lon = float(melhor["location"]["x"])
-                atrib = melhor.get("attributes", {})
+                lat_cand = float(melhor["location"]["y"])
+                lon_cand = float(melhor["location"]["x"])
+                if dentro_perimetro_rmbh(lat_cand, lon_cand):
+                    lat, lon = lat_cand, lon_cand
+                    atrib = melhor.get("attributes", {})
 
-                if not bairro_oficial and atrib.get("Nbrhd"):
-                    bairro_oficial = atrib.get("Nbrhd")
-                if atrib.get("City"):
-                    cidade_oficial = atrib.get("City")
-                if not cep_encontrado and atrib.get("Postal"):
-                    cep_raw = re.sub(r"\D", "", atrib.get("Postal", ""))
-                    if len(cep_raw) == 8:
-                        cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
+                    if not bairro_oficial and atrib.get("Nbrhd"):
+                        bairro_oficial = atrib.get("Nbrhd")
+                    if atrib.get("City"):
+                        cidade_oficial = atrib.get("City")
+                    if not cep_encontrado and atrib.get("Postal"):
+                        cep_raw = re.sub(r"\D", "", atrib.get("Postal", ""))
+                        if len(cep_raw) == 8:
+                            cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
     except Exception:
         pass
 
@@ -389,7 +504,7 @@ def buscar_endereco_completo(endereco_bruto: str):
     endereco_padronizado = ", ".join(partes_end)
 
     if lat is None or lon is None:
-        lat, lon = geocodificar_ponto(endereco_padronizado)
+        lat, lon = geocodificar_endereco_rua(endereco_padronizado)
 
     if not cep_encontrado or bairro_final == "Bairro não identificado":
         status = "⚠️ INCOMPLETO (CONFERIR BAIRRO/CEP)"
@@ -397,6 +512,73 @@ def buscar_endereco_completo(endereco_bruto: str):
         status = "✅ OK"
 
     return endereco_padronizado, status, lat, lon
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def validar_e_geocodificar_partida(texto_partida: str):
+    """
+    Valida e geocodifica o Ponto de Partida dinamicamente, funcionando tanto para:
+    - Apenas Bairro (ex: 'Bairro Maria Goretti, Belo Horizonte', 'Santa Cruz', 'Savassi')
+    - Rua com ou sem número (ex: 'Rua Itaipu 760', 'Av Cristiano Machado 4000')
+    - CEP (ex: '31930-000')
+    Retorna: (sucesso_bool, texto_validado, lat, lon)
+    """
+    bruto = str(texto_partida).strip()
+    if not bruto:
+        return False, "❌ Digite um bairro, rua ou CEP de partida.", None, None
+
+    # Caso 1: Usuário digitou um CEP (8 dígitos)
+    apenas_digitos = re.sub(r"\D", "", bruto)
+    if len(apenas_digitos) == 8:
+        try:
+            resp_cep = requests.get(f"https://viacep.com.br/ws/{apenas_digitos}/json/", timeout=5)
+            if resp_cep.status_code == 200:
+                d_cep = resp_cep.json()
+                if not d_cep.get("erro"):
+                    logr = d_cep.get("logradouro", "")
+                    bair = d_cep.get("bairro", "")
+                    cid = d_cep.get("localidade", "Belo Horizonte")
+                    cep_f = d_cep.get("cep", bruto)
+                    desc = f"{logr}, {bair}, {cid} ({cep_f})".strip(" ,")
+                    lat, lon = geocodificar_endereco_rua(desc)
+                    return True, f"CEP localizado: {desc}", lat, lon
+        except Exception:
+            pass
+
+    texto_norm = remover_acentos(bruto.lower())
+    tem_prefixo_rua = texto_norm.startswith(PREFIXOS_RUA)
+    tem_numero_imovel = bool(re.search(r"\b\d+\b", texto_norm))
+
+    # Caso 2: É um endereço de RUA (começa com Rua/Av ou possui número de imóvel)
+    if tem_prefixo_rua or tem_numero_imovel:
+        end_form, status_end, lat, lon = buscar_endereco_completo(bruto)
+        if status_end.startswith("❌") or lat is None:
+            return False, "❌ Endereço de partida não encontrado. Confira a rua/número.", None, None
+        return True, f"Endereço: {end_form}", lat, lon
+
+    # Caso 3: É apenas um BAIRRO (ex: 'Bairro Maria Goretti, Belo Horizonte, MG' ou 'Santa Cruz')
+    cidade_alvo = detectar_cidade_rmbh(bruto)
+    # Limpa a palavra 'bairro', a cidade e a sigla 'MG' para isolar o nome puro do bairro
+    nome_bairro = re.sub(r"\bbairro\b", "", bruto, flags=re.IGNORECASE)
+    for cid in CIDADES_RMBH:
+        nome_bairro = re.sub(rf"\b{cid}\b", "", nome_bairro, flags=re.IGNORECASE)
+        nome_bairro = re.sub(rf"\b{MAPA_NOMES_CIDADES[cid]}\b", "", nome_bairro, flags=re.IGNORECASE)
+    nome_bairro = re.sub(r"\b(mg|minas gerais|brasil)\b", "", nome_bairro, flags=re.IGNORECASE)
+    nome_bairro = nome_bairro.strip(" ,.-/")
+
+    if not nome_bairro:
+        return False, "❌ Informe o nome do bairro ou da rua de partida.", None, None
+
+    ok_b, desc_b, lat_b, lon_b = buscar_coordenada_bairro(nome_bairro, cidade_alvo)
+    if ok_b:
+        return True, desc_b, lat_b, lon_b
+
+    # Última tentativa: caso o usuário tenha digitado o nome de uma rua sem a palavra "Rua" e sem número
+    end_form, status_end, lat, lon = buscar_endereco_completo(bruto)
+    if not status_end.startswith("❌") and lat is not None:
+        return True, f"Via localizada: {end_form}", lat, lon
+
+    return False, desc_b, None, None
 
 
 def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
@@ -493,7 +675,7 @@ def dividir_pedidos_por_cota(df: pd.DataFrame, nomes_rotas: list, cotas_rotas: l
         lat = row.get("Lat")
         lon = row.get("Lon")
         if pd.isna(lat) or pd.isna(lon) or lat is None or lon is None:
-            lat, lon = geocodificar_ponto(str(row.get("Endereco", "")))
+            lat, lon = geocodificar_endereco_rua(str(row.get("Endereco", "")))
         coords.append((float(lat), float(lon)))
 
     angulos = []
@@ -634,7 +816,7 @@ def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: floa
     for idx, row in df_trab.iterrows():
         lat, lon = row.get("Lat"), row.get("Lon")
         if pd.isna(lat) or pd.isna(lon) or lat is None or lon is None:
-            lat, lon = geocodificar_ponto(str(row.get("Endereco", "")))
+            lat, lon = geocodificar_endereco_rua(str(row.get("Endereco", "")))
             df_trab.at[idx, "Lat"] = lat
             df_trab.at[idx, "Lon"] = lon
         pontos.append((float(lat), float(lon)))
@@ -706,8 +888,7 @@ def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: floa
     return df_ordenado, km_total
 
 
-def recalcular_todas_as_rotas(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: list, endereco_partida: str):
-    lat_s, lon_s = geocodificar_ponto(endereco_partida)
+def recalcular_todas_as_rotas(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: list, lat_s: float, lon_s: float):
     dfs_otimizados = []
     resumo_km = {}
 
@@ -737,12 +918,12 @@ def formatar_titulo_rota(nome: str) -> str:
     return limpo
 
 
-def renderizar_mapa_rotas(df_rotas: pd.DataFrame, nomes_rotas: list, coord_partida: tuple, end_partida: str):
+def renderizar_mapa_rotas(df_rotas: pd.DataFrame, nomes_rotas: list, coord_partida: tuple, desc_partida: str):
     lat_p, lon_p = coord_partida
     marcadores_js = []
     linhas_js = []
 
-    end_p_safe = str(end_partida).replace("'", "").replace('"', "")
+    end_p_safe = str(desc_partida).replace("'", "").replace('"', "")
     marcadores_js.append(f"""
         L.marker([{lat_p}, {lon_p}], {{
             icon: L.divIcon({{
@@ -825,20 +1006,28 @@ if "resumo_km_rotas" not in st.session_state:
     st.session_state["resumo_km_rotas"] = {}
 
 if "coord_partida_atual" not in st.session_state:
-    st.session_state["coord_partida_atual"] = COORD_MARIA_GORETTI
+    st.session_state["coord_partida_atual"] = (-19.9167, -43.9345)
 
 if "contador_form" not in st.session_state:
     st.session_state["contador_form"] = 0
 
 st.title("🛵 Gerador de Rotas")
 
-# --- BARRA LATERAL: CONFIGURAÇÕES SALVÁVEIS ---
+# --- BARRA LATERAL: CONFIGURAÇÕES E VALIDAÇÃO DE PARTIDA ---
 with st.sidebar:
     st.header("📍 Ponto de Partida")
     ponto_partida = st.text_input(
-        "Endereço de saída das rotas:",
-        value=config_salva.get("ponto_partida", "Bairro Maria Goretti, Belo Horizonte, MG")
+        "Bairro, Rua+Nº ou CEP de saída:",
+        value=config_salva.get("ponto_partida", "Bairro Maria Goretti, Belo Horizonte, MG"),
+        help="Pode digitar apenas o bairro (ex: 'Bairro Maria Goretti' ou 'Savassi'), uma rua com número ou um CEP."
     )
+
+    # Validação ao vivo do Ponto de Partida
+    partida_ok, desc_partida_validada, lat_partida, lon_partida = validar_e_geocodificar_partida(ponto_partida)
+    if partida_ok:
+        st.success(f"✅ **Partida localizada:**\n{desc_partida_validada}")
+    else:
+        st.error(desc_partida_validada)
 
     st.divider()
     st.header("📦 Locais (Pacotes)")
@@ -865,6 +1054,22 @@ with st.sidebar:
         "Local 3": [p for p in local_3.split(",") if p.strip()],
         "Local 4": [p for p in local_4.split(",") if p.strip()],
     }
+
+# Se já havia rotas geradas e o usuário mudou o ponto de partida na barra lateral, recalcula automaticamente
+if (
+    partida_ok
+    and not st.session_state["df_rotas_calculadas"].empty
+    and st.session_state["coord_partida_atual"] != (lat_partida, lon_partida)
+):
+    df_reotim, novo_km, nova_coord = recalcular_todas_as_rotas(
+        st.session_state["df_rotas_calculadas"],
+        st.session_state["nomes_rotas_ativas"],
+        lat_partida,
+        lon_partida
+    )
+    st.session_state["df_rotas_calculadas"] = df_reotim
+    st.session_state["resumo_km_rotas"] = novo_km
+    st.session_state["coord_partida_atual"] = nova_coord
 
 # --- PASSO 1: ADICIONAR PEDIDOS ---
 st.subheader("1️⃣ Adicionar Pedidos")
@@ -1038,9 +1243,16 @@ if not st.session_state["df_pedidos"].empty:
         else:
             st.warning(f"⚠️ A soma das rotas está em **{soma_cotas}** pedidos, mas você só tem **{total_pedidos}** na lista (passou **{abs(diferenca)}**).")
 
-    if st.button("🚀 Gerar e Otimizar Rotas", type="primary", use_container_width=True, disabled=(soma_cotas != total_pedidos)):
+    if not partida_ok:
+        st.error("⚠️ Corrija o Ponto de Partida na barra lateral esquerda antes de gerar as rotas.")
+
+    if st.button(
+        "🚀 Gerar e Otimizar Rotas",
+        type="primary",
+        use_container_width=True,
+        disabled=(soma_cotas != total_pedidos or not partida_ok)
+    ):
         with st.spinner("Agrupando regiões e calculando a melhor sequência rua a rua..."):
-            lat_s, lon_s = geocodificar_ponto(ponto_partida)
             df_para_dividir = df_editado.copy().reset_index(drop=True)
 
             nomes_unicos = []
@@ -1053,15 +1265,16 @@ if not st.session_state["df_pedidos"].empty:
                 df_para_dividir,
                 nomes_unicos,
                 cotas_escolhidas,
-                lat_s,
-                lon_s
+                lat_partida,
+                lon_partida
             )
             df_para_dividir["Rota"] = rotas_atribuidas
 
             df_otimizado, resumo_km, coord_p = recalcular_todas_as_rotas(
                 df_para_dividir,
                 nomes_unicos,
-                ponto_partida
+                lat_partida,
+                lon_partida
             )
 
             st.session_state["df_rotas_calculadas"] = df_otimizado
@@ -1116,12 +1329,13 @@ if not st.session_state["df_rotas_calculadas"].empty:
         not df_rotas_edit["Posicao"].equals(df_rotas["Posicao"])
     )
 
-    if mudou_rota_ou_pos:
+    if mudou_rota_ou_pos and partida_ok:
         with st.spinner("Recalculando a melhor sequência das rotas após a alteração..."):
             df_reotimizado, novo_km, coord_p = recalcular_todas_as_rotas(
                 df_rotas_edit,
                 nomes_ativas,
-                ponto_partida
+                lat_partida,
+                lon_partida
             )
             st.session_state["df_rotas_calculadas"] = df_reotimizado
             st.session_state["resumo_km_rotas"] = novo_km
@@ -1136,7 +1350,7 @@ if not st.session_state["df_rotas_calculadas"].empty:
             st.session_state["df_rotas_calculadas"],
             nomes_ativas,
             st.session_state["coord_partida_atual"],
-            ponto_partida
+            desc_partida_validada
         )
 
     st.markdown("### 📋 Textos Prontos para Copiar (WhatsApp / Telegram)")
