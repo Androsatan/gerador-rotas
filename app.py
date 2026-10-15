@@ -166,7 +166,7 @@ TITULOS_E_STOPWORDS_RUA = {
     "doutor", "dr", "dra", "professor", "prof", "profa", "presidente", "pres",
     "coronel", "cel", "general", "gen", "padre", "pe", "deputado", "dep",
     "senador", "sen", "governador", "gov", "engenheiro", "eng", "desembargador",
-    "des", "dom", "dona", "conde", "visconde", "barao", " marques", "prefeito"
+    "des", "dom", "dona", "conde", "visconde", "barao", "marques", "prefeito"
 }
 
 PALAVRAS_GENERICAS_BAIRRO = {
@@ -284,11 +284,9 @@ def similaridade_ruas(rua_digitada: str, rua_candidata: str) -> float:
     media_palavras = sum(notas_palavras) / len(notas_palavras)
     menor_palavra = min(notas_palavras)
 
-    # Se todas as palavras que o usuário digitou batem forte com palavras da rua oficial
     if menor_palavra >= 0.80 and media_palavras >= 0.84:
         return max(sim_frase, media_palavras)
 
-    # Se alguma palavra importante digitada não tem nada a ver com a rua candidata, penaliza
     if menor_palavra < 0.55 and len(t_dig) >= 2:
         return min(sim_frase, media_palavras) * 0.75
 
@@ -642,7 +640,7 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     except Exception:
         pass
 
-    # 3. ArcGIS com validação estrita do nome do bairro (nunca aceita Maria Teresa para Maria Goretti)
+    # 3. ArcGIS com validação estrita do nome do bairro
     try:
         q_arc = f"Bairro {nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_arc = (
@@ -780,7 +778,6 @@ def buscar_endereco_completo(endereco_bruto: str):
     lat, lon = None, None
     opcoes_bairros = []
 
-    # Define ordem de cidades para tentar no ViaCEP (prioriza a cidade detectada; se não achar, testa vizinhas)
     cidades_para_testar = [cidade]
     if bairro_dica:
         for cid_extra in ["Nova Lima", "Contagem", "Belo Horizonte", "Sabará", "Santa Luzia", "Betim"]:
@@ -801,7 +798,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             if not candidatos_faixa:
                 candidatos_faixa = [d for d in dados_viacep if d.get("bairro")]
 
-            # Ordena pela maior similaridade de rua + bairro
             def nota_candidato_viacep(item):
                 s_rua = similaridade_ruas(rua, item.get("logradouro", ""))
                 s_bairro = similaridade_bairros(bairro_dica, item.get("bairro", "")) if bairro_dica else 0.0
@@ -818,7 +814,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             if bateu_bairro_dica:
                 escolhido = bateu_bairro_dica[0]
             elif bairro_dica and cid_teste != cidade:
-                # Se estamos testando uma cidade secundária, exige que o bairro_dica bata
                 continue
             else:
                 escolhido = candidatos_faixa[0] if candidatos_faixa else dados_viacep[0]
@@ -875,13 +870,11 @@ def buscar_endereco_completo(endereco_bruto: str):
                 st_name = atrib.get("StName", "")
                 rua_arcgis = f"{st_type} {st_name}".strip()
 
-                # Se já temos logradouro confirmado pelo ViaCEP, aceitamos a coordenada se a rua bater
                 if logradouro_oficial:
                     if not rua_arcgis or similaridade_ruas(logradouro_oficial, rua_arcgis) >= 0.68:
                         lat, lon = lat_cand, lon_cand
                         break
                 else:
-                    # Se o ViaCEP não achou, SÓ aceitamos a sugestão do ArcGIS se o nome da rua bater de verdade!
                     if rua_arcgis and similaridade_ruas(rua, rua_arcgis) >= 0.72:
                         nbr_arc = atrib.get("Nbrhd", "")
                         if bairro_dica and nbr_arc and similaridade_bairros(bairro_dica, nbr_arc) < 0.60:
@@ -916,7 +909,6 @@ def buscar_endereco_completo(endereco_bruto: str):
                             cidade_oficial = d_cep.get("localidade") or cidade_oficial
                             cep_encontrado = d_cep.get("cep") or cep_encontrado
                         elif not logradouro_oficial:
-                            # O CEP devolvido pelo geocoder pertence a outra rua diferente; descarta o CEP errado
                             cep_encontrado = ""
             except Exception:
                 pass
@@ -948,7 +940,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             pass
 
     if not logradouro_oficial:
-        # Nunca substitui por uma rua aleatória! Mantém os dados originais e alerta o usuário
         partes_orig = [rua.title()]
         if numero:
             partes_orig.append(numero)
@@ -1923,7 +1914,7 @@ if not st.session_state["df_pedidos"].empty:
         disabled=(soma_cotas != total_pedidos_atual or not partida_ok)
     ):
         with st.spinner("Agrupando regiões e calculando a melhor sequência rua a rua..."):
-            df_ mais_recente = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"]).copy().reset_index(drop=True)
+            df_mais_recente = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"]).copy().reset_index(drop=True)
             atualizar_base_pedidos(df_mais_recente)
 
             nomes_unicos = []
