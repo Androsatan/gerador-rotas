@@ -55,6 +55,28 @@ pre, code {
 </style>
 """, unsafe_allow_html=True)
 
+# ================= CONTROLE DE AUTENTICAÇÃO POR SENHA =================
+if "autenticado" not in st.session_state:
+    st.session_state["autenticado"] = False
+
+if not st.session_state["autenticado"]:
+    st.title("🔒 Acesso Restrito - Gerador de Rotas")
+    st.markdown("Digite a senha de acesso para entrar no sistema.")
+
+    with st.form("form_login"):
+        senha_digitada = st.text_input("Senha:", type="password", placeholder="Digite a senha...")
+        btn_entrar = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+
+        if btn_entrar:
+            if senha_digitada.strip() == "2k12345":
+                st.session_state["autenticado"] = True
+                st.rerun()
+            else:
+                st.error("❌ Senha incorreta. Tente novamente.")
+
+    st.stop()
+
+
 ARQUIVO_CONFIG = "config_rotas.json"
 
 CIDADES_RMBH = [
@@ -86,10 +108,71 @@ MAPA_NOMES_CIDADES = {
     "raposos": "Raposos"
 }
 
+# Bairros clássicos da RMBH que frequentemente vêm sem o nome da cidade no pedido
+MAPA_BAIRROS_RMBH = {
+    "vila da serra": "Nova Lima",
+    "vale do sereno": "Nova Lima",
+    "jardim canada": "Nova Lima",
+    "alphaville": "Nova Lima",
+    "vila castela": "Nova Lima",
+    "vale dos cristais": "Nova Lima",
+    "bosque da ribeira": "Nova Lima",
+    "ouro velho": "Nova Lima",
+    "eldorado": "Contagem",
+    "novo eldorado": "Contagem",
+    "parque sao joao": "Contagem",
+    "jardim riacho": "Contagem",
+    "riacho das pedras": "Contagem",
+    "inconfidentes": "Contagem",
+    "cidade industrial": "Contagem",
+    "jardim industrial": "Contagem",
+    "industrial": "Contagem",
+    "agua branca": "Contagem",
+    "nacional": "Contagem",
+    "cabral": "Contagem",
+    "kennedy": "Contagem",
+    "ressaca": "Contagem",
+    "amazonas": "Contagem",
+    "alterosas": "Betim",
+    "jardim alterosas": "Betim",
+    "angola": "Betim",
+    "filadelfia": "Betim",
+    "ptb": "Betim",
+    "citrolandia": "Betim",
+    "sao benedito": "Santa Luzia",
+    "palmital": "Santa Luzia",
+    "conjunto cristina": "Santa Luzia",
+    "justinopolis": "Ribeirão das Neves",
+    "veneza": "Ribeirão das Neves",
+    "sevilha": "Ribeirão das Neves",
+    "nacoes unidas": "Sabará",
+    "general carneiro": "Sabará",
+    "roca grande": "Sabará",
+}
+
+COORDENADAS_BAIRROS_FIXOS = {
+    "maria goretti": (-19.8808, -43.9178, "Bairro Santa Maria Goretti (Regional Nordeste), Belo Horizonte"),
+    "santa maria goretti": (-19.8808, -43.9178, "Bairro Santa Maria Goretti (Regional Nordeste), Belo Horizonte"),
+}
+
 PREFIXOS_RUA = (
     "rua ", "r. ", "r ", "av ", "av. ", "avenida ", "alameda ", "al. ",
     "praca ", "praça ", "travessa ", "tv. ", "beco ", "rodovia ", "estrada ", "anel "
 )
+
+TITULOS_E_STOPWORDS_RUA = {
+    "rua", "r", "avenida", "av", "alameda", "al", "praca", "travessa", "tv",
+    "beco", "rodovia", "estrada", "anel", "de", "da", "do", "dos", "das", "e",
+    "doutor", "dr", "dra", "professor", "prof", "profa", "presidente", "pres",
+    "coronel", "cel", "general", "gen", "padre", "pe", "deputado", "dep",
+    "senador", "sen", "governador", "gov", "engenheiro", "eng", "desembargador",
+    "des", "dom", "dona", "conde", "visconde", "barao", " marques", "prefeito"
+}
+
+PALAVRAS_GENERICAS_BAIRRO = {
+    "bairro", "vila", "jardim", "parque", "conjunto", "conj", "residencial",
+    "condominio", "santa", "santo", "sao", "nossa", "senhora", "de", "da", "do", "dos", "das"
+}
 
 PALAVRAS_NAO_ENDERECO = (
     "pacote", "pct", "pedido", "ped", "item", "itens", "kit", "combo",
@@ -109,7 +192,7 @@ REGEX_CABECALHO_CHAT = re.compile(
 # ================= FUNÇÕES DE CONFIGURAÇÃO (SALVAR PRODUTOS) =================
 def carregar_config():
     padrao = {
-        "ponto_partida": "Maria Goretti, Belo Horizonte, MG",
+        "ponto_partida": "Bairro Maria Goretti, Belo Horizonte, MG",
         "local_1": "skunk, orange, amnesia, silver, wolf, super sheep, og kush, indoor, zowahh",
         "local_2": "ice, pak, dry, pod, colombia gold, uva",
         "local_3": "@, md, lsd, pacote gd",
@@ -138,11 +221,17 @@ def remover_acentos(texto: str) -> str:
     return "".join([c for c in nfkd if not unicodedata.combining(c)])
 
 
-def detectar_cidade_rmbh(texto: str) -> str:
+def detectar_cidade_rmbh(texto: str, bairro_dica: str = "") -> str:
     texto_norm = remover_acentos(texto.lower())
     for cid in CIDADES_RMBH:
         if re.search(rf"\b{cid}\b", texto_norm):
             return MAPA_NOMES_CIDADES.get(cid, cid.title())
+
+    check_bairro = remover_acentos(f"{bairro_dica} {texto}".lower())
+    for b_rmbh, cid_rmbh in MAPA_BAIRROS_RMBH.items():
+        if re.search(rf"\b{re.escape(b_rmbh)}\b", check_bairro):
+            return cid_rmbh
+
     return "Belo Horizonte"
 
 
@@ -162,6 +251,85 @@ def similaridade_palavras(palavra_cliente: str, palavra_cadastro: str) -> float:
     if len(palavra_cliente) >= 3 and len(palavra_cadastro) >= 3:
         return SequenceMatcher(None, palavra_cliente, palavra_cadastro).ratio()
     return 0.0
+
+
+def tokens_nucleo_rua(nome_rua: str) -> list:
+    limpo = remover_acentos(str(nome_rua).lower())
+    palavras = re.findall(r"[a-z0-9]+", limpo)
+    nucleo = [p for p in palavras if p not in TITULOS_E_STOPWORDS_RUA and len(p) >= 2]
+    if not nucleo:
+        nucleo = [p for p in palavras if p not in ("rua", "r", "av", "avenida", "alameda", "praca", "travessa", "beco")]
+    return nucleo
+
+
+def similaridade_ruas(rua_digitada: str, rua_candidata: str) -> float:
+    """
+    Calcula o grau de semelhança real entre a rua digitada pelo usuário e a rua retornada pela API.
+    Impede que uma rua como 'Gonzalez pecocthe' seja trocada por 'Rua São João da Serra'.
+    """
+    t_dig = tokens_nucleo_rua(rua_digitada)
+    t_cand = tokens_nucleo_rua(rua_candidata)
+    if not t_dig or not t_cand:
+        return 0.0
+
+    str_dig = " ".join(t_dig)
+    str_cand = " ".join(t_cand)
+    sim_frase = SequenceMatcher(None, str_dig, str_cand).ratio()
+
+    notas_palavras = []
+    for p_d in t_dig:
+        melhor = max(SequenceMatcher(None, p_d, p_c).ratio() for p_c in t_cand)
+        notas_palavras.append(melhor)
+
+    media_palavras = sum(notas_palavras) / len(notas_palavras)
+    menor_palavra = min(notas_palavras)
+
+    # Se todas as palavras que o usuário digitou batem forte com palavras da rua oficial
+    if menor_palavra >= 0.80 and media_palavras >= 0.84:
+        return max(sim_frase, media_palavras)
+
+    # Se alguma palavra importante digitada não tem nada a ver com a rua candidata, penaliza
+    if menor_palavra < 0.55 and len(t_dig) >= 2:
+        return min(sim_frase, media_palavras) * 0.75
+
+    return (sim_frase * 0.45) + (media_palavras * 0.55)
+
+
+def similaridade_bairros(bairro_dica: str, bairro_candidato: str) -> float:
+    if not bairro_dica or not bairro_candidato:
+        return 0.0
+    b1 = remover_acentos(bairro_dica.lower()).strip()
+    b2 = remover_acentos(bairro_candidato.lower()).strip()
+    if b1 == b2 or (len(b1) >= 4 and b1 in b2) or (len(b2) >= 4 and b2 in b1):
+        return 1.0
+    return SequenceMatcher(None, b1, b2).ratio()
+
+
+def nome_bairro_partida_bate(bairro_buscado: str, bairro_retornado: str) -> bool:
+    """Garante que o Ponto de Partida não aceite 'Maria Teresa' quando buscamos 'Maria Goretti'."""
+    b_alvo = remover_acentos(bairro_buscado.lower()).strip()
+    b_ret = remover_acentos(bairro_retornado.lower()).strip()
+    if not b_alvo or not b_ret:
+        return False
+    if b_alvo in b_ret or b_ret in b_alvo:
+        return True
+
+    palavras_alvo = [p for p in re.findall(r"[a-z0-9]+", b_alvo) if p not in PALAVRAS_GENERICAS_BAIRRO]
+    palavras_ret = [p for p in re.findall(r"[a-z0-9]+", b_ret) if p not in PALAVRAS_GENERICAS_BAIRRO]
+
+    if not palavras_alvo:
+        palavras_alvo = re.findall(r"[a-z0-9]+", b_alvo)
+    if not palavras_ret:
+        palavras_ret = re.findall(r"[a-z0-9]+", b_ret)
+
+    if not palavras_alvo or not palavras_ret:
+        return False
+
+    for p_a in palavras_alvo:
+        melhor = max(SequenceMatcher(None, p_a, p_r).ratio() for p_r in palavras_ret)
+        if melhor < 0.78:
+            return False
+    return True
 
 
 def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
@@ -344,7 +512,6 @@ def pode_ser_nome_cliente(linha: str) -> bool:
 
 def separar_componentes_endereco(endereco_bruto: str):
     end_limpo = re.sub(r"^(endereco|end\.?|local|entrega)\s*[:\-]\s*", "", endereco_bruto.strip(), flags=re.IGNORECASE)
-    cidade_detectada = detectar_cidade_rmbh(end_limpo)
 
     bairro_antes_da_rua = ""
     match_meio = re.search(
@@ -390,6 +557,7 @@ def separar_componentes_endereco(endereco_bruto: str):
     else:
         bairro_dica = resto_limpo
 
+    cidade_detectada = detectar_cidade_rmbh(endereco_bruto, bairro_dica)
     return rua, numero, bairro_dica, cidade_detectada
 
 
@@ -401,13 +569,18 @@ def dentro_perimetro_rmbh(lat: float, lon: float) -> bool:
 def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     bairro_alvo_norm = remover_acentos(nome_bairro_limpo.lower()).strip()
 
+    if bairro_alvo_norm in COORDENADAS_BAIRROS_FIXOS and remover_acentos(cidade.lower()) == "belo horizonte":
+        lat_fixo, lon_fixo, desc_fixa = COORDENADAS_BAIRROS_FIXOS[bairro_alvo_norm]
+        return True, desc_fixa, lat_fixo, lon_fixo
+
+    # 1. Nominatim com validação estrita do nome do bairro
     try:
         q_nom = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_nom = (
             f"https://nominatim.openstreetmap.org/search"
             f"?q={quote(q_nom)}&format=jsonv2&addressdetails=1&limit=10&countrycodes=br"
         )
-        headers = {"User-Agent": "GeradorRotasRMBH/2.0 (contato@geradorrotas.app)"}
+        headers = {"User-Agent": "GeradorRotasRMBH/2.5 (contato@geradorrotas.app)"}
         resp = requests.get(url_nom, headers=headers, timeout=5)
         if resp.status_code == 200:
             resultados = resp.json()
@@ -425,10 +598,9 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
                     continue
 
                 suburb = end_det.get("suburb") or end_det.get("neighbourhood") or end_det.get("quarter") or item.get("name", "")
-                suburb_norm = remover_acentos(suburb.lower())
-
-                if tipo in ("suburb", "neighbourhood", "quarter", "administrative", "city_district") or (
-                    bairro_alvo_norm in suburb_norm or suburb_norm in bairro_alvo_norm
+                if (
+                    tipo in ("suburb", "neighbourhood", "quarter", "administrative", "city_district", "residential")
+                    and nome_bairro_partida_bate(nome_bairro_limpo, suburb)
                 ):
                     regional = end_det.get("city_district") or end_det.get("municipality") or ""
                     cid_item = end_det.get("city") or end_det.get("town") or cidade
@@ -443,9 +615,10 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     except Exception:
         pass
 
+    # 2. Photon com validação estrita do nome do bairro
     try:
         q_photon = f"{nome_bairro_limpo} {cidade} Minas Gerais"
-        url_photon = f"https://photon.komoot.io/api/?q={quote(q_photon)}&lat=-19.9167&lon=-43.9345&limit=10"
+        url_photon = f"https://photon.komoot.io/api/?q={quote(q_photon)}&lat=-19.9167&lon=-43.9345&limit=12"
         resp_p = requests.get(url_photon, timeout=5)
         if resp_p.status_code == 200:
             features = resp_p.json().get("features", [])
@@ -458,35 +631,39 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
                 coords = feat.get("geometry", {}).get("coordinates", [])
                 if len(coords) == 2:
                     lon_f, lat_f = float(coords[0]), float(coords[1])
-                    if dentro_perimetro_rmbh(lat_f, lon_f) and osm_val in (
-                        "suburb", "neighbourhood", "quarter", "district", "locality", "administrative"
+                    nome_f = props.get("name", "")
+                    if (
+                        dentro_perimetro_rmbh(lat_f, lon_f)
+                        and osm_val in ("suburb", "neighbourhood", "quarter", "district", "locality", "administrative")
+                        and nome_bairro_partida_bate(nome_bairro_limpo, nome_f)
                     ):
-                        nome_f = props.get("name", nome_bairro_limpo.title())
                         cid_f = props.get("city", cidade)
                         return True, f"Bairro {nome_f}, {cid_f} - MG", lat_f, lon_f
     except Exception:
         pass
 
+    # 3. ArcGIS com validação estrita do nome do bairro (nunca aceita Maria Teresa para Maria Goretti)
     try:
-        q_arc = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
+        q_arc = f"Bairro {nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_arc = (
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
             f"?SingleLine={quote(q_arc)}&category=Neighborhood,Locality,Subregion"
             f"&searchExtent=-44.50,-20.30,-43.50,-19.50"
-            f"&outFields=Addr_type,PlaceName,Nbrhd,City,Postal&maxLocations=5&f=json"
+            f"&outFields=Addr_type,PlaceName,Nbrhd,City,Postal&maxLocations=10&f=json"
         )
         resp_a = requests.get(url_arc, timeout=5)
         if resp_a.status_code == 200:
             cands = resp_a.json().get("candidates", [])
             for c in cands:
-                if c.get("score", 0) >= 80:
+                if c.get("score", 0) >= 75:
                     lat_a = float(c["location"]["y"])
                     lon_a = float(c["location"]["x"])
                     if dentro_perimetro_rmbh(lat_a, lon_a):
                         atrib = c.get("attributes", {})
-                        nome_b = atrib.get("PlaceName") or atrib.get("Nbrhd") or nome_bairro_limpo.title()
-                        cid_a = atrib.get("City") or cidade
-                        return True, f"Bairro {nome_b}, {cid_a} - MG", lat_a, lon_a
+                        nome_b = atrib.get("PlaceName") or atrib.get("Nbrhd") or ""
+                        if nome_bairro_partida_bate(nome_bairro_limpo, nome_b):
+                            cid_a = atrib.get("City") or cidade
+                            return True, f"Bairro {nome_b}, {cid_a} - MG", lat_a, lon_a
     except Exception:
         pass
 
@@ -517,7 +694,7 @@ def geocodificar_endereco_rua(endereco_completo_texto: str):
             f"https://nominatim.openstreetmap.org/search"
             f"?q={quote(endereco_completo_texto + ', Minas Gerais, Brasil')}&format=json&limit=1"
         )
-        headers = {"User-Agent": "GeradorRotasRMBH/2.0"}
+        headers = {"User-Agent": "GeradorRotasRMBH/2.5"}
         resp_n = requests.get(url_nom, headers=headers, timeout=5)
         if resp_n.status_code == 200:
             dados = resp_n.json()
@@ -551,6 +728,38 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
     return True
 
 
+def consultar_viacep_com_tolerancia(rua_original: str, rua_sem_prefixo: str, cidade: str) -> list:
+    """
+    Consulta o ViaCEP pelo nome da rua. Se não achar devido a erro de digitação em uma das palavras
+    (ex: 'Gonzalez pecocthe' em vez de 'Gonzalez Pecotche'), busca pelas palavras-chave da rua
+    e filtra apenas logradouros que tenham alta similaridade real com a rua digitada.
+    """
+    termos_tentativa = [rua_sem_prefixo]
+    tokens = tokens_nucleo_rua(rua_sem_prefixo)
+    for tk in tokens:
+        if len(tk) >= 4 and tk not in termos_tentativa:
+            termos_tentativa.append(tk)
+
+    for termo in termos_tentativa:
+        if len(termo) < 3:
+            continue
+        try:
+            url_viacep = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade))}/{quote(remover_acentos(termo))}/json/"
+            resp = requests.get(url_viacep, timeout=4)
+            if resp.status_code == 200:
+                dados = resp.json()
+                if isinstance(dados, list) and len(dados) > 0:
+                    filtrados = [
+                        d for d in dados
+                        if d.get("logradouro") and similaridade_ruas(rua_original, d.get("logradouro", "")) >= 0.72
+                    ]
+                    if filtrados:
+                        return filtrados
+        except Exception:
+            pass
+    return []
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_endereco_completo(endereco_bruto: str):
     if not str(endereco_bruto).strip():
@@ -571,59 +780,76 @@ def buscar_endereco_completo(endereco_bruto: str):
     lat, lon = None, None
     opcoes_bairros = []
 
+    # Define ordem de cidades para tentar no ViaCEP (prioriza a cidade detectada; se não achar, testa vizinhas)
+    cidades_para_testar = [cidade]
+    if bairro_dica:
+        for cid_extra in ["Nova Lima", "Contagem", "Belo Horizonte", "Sabará", "Santa Luzia", "Betim"]:
+            if cid_extra not in cidades_para_testar:
+                cidades_para_testar.append(cid_extra)
+
+    # 1. Consulta ViaCEP (com tolerância a erro de digitação e validação estrita de nome de rua)
     if len(rua_sem_prefixo) >= 3:
-        try:
-            url_viacep = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade))}/{quote(remover_acentos(rua_sem_prefixo))}/json/"
-            resp = requests.get(url_viacep, timeout=5)
-            if resp.status_code == 200:
-                dados = resp.json()
-                if isinstance(dados, list) and len(dados) > 0:
-                    candidatos_faixa = [
-                        d for d in dados
-                        if d.get("bairro") and numero_cabe_na_faixa_viacep(numero, d.get("complemento", ""))
-                    ]
-                    if not candidatos_faixa:
-                        candidatos_faixa = [d for d in dados if d.get("bairro")]
+        for cid_teste in cidades_para_testar:
+            dados_viacep = consultar_viacep_com_tolerancia(rua, rua_sem_prefixo, cid_teste)
+            if not dados_viacep:
+                continue
 
-                    bateu_bairro_dica = []
-                    if bairro_dica:
-                        dica_norm = remover_acentos(bairro_dica.lower())
-                        for item in candidatos_faixa:
-                            b_item = remover_acentos(item.get("bairro", "").lower())
-                            if b_item and (b_item in dica_norm or dica_norm in b_item or SequenceMatcher(None, b_item, dica_norm).ratio() >= 0.78):
-                                bateu_bairro_dica.append(item)
+            candidatos_faixa = [
+                d for d in dados_viacep
+                if d.get("bairro") and numero_cabe_na_faixa_viacep(numero, d.get("complemento", ""))
+            ]
+            if not candidatos_faixa:
+                candidatos_faixa = [d for d in dados_viacep if d.get("bairro")]
 
-                    if bateu_bairro_dica:
-                        escolhido = bateu_bairro_dica[0]
-                    else:
-                        escolhido = candidatos_faixa[0] if candidatos_faixa else dados[0]
+            # Ordena pela maior similaridade de rua + bairro
+            def nota_candidato_viacep(item):
+                s_rua = similaridade_ruas(rua, item.get("logradouro", ""))
+                s_bairro = similaridade_bairros(bairro_dica, item.get("bairro", "")) if bairro_dica else 0.0
+                return (s_bairro >= 0.78, s_rua + (s_bairro * 0.3))
 
-                        mapa_bairros_unicos = {}
-                        for item in candidatos_faixa:
-                            b_nome = item.get("bairro", "").strip()
-                            if b_nome and b_nome not in mapa_bairros_unicos:
-                                logr_i = item.get("logradouro") or rua.title()
-                                cid_i = item.get("localidade") or cidade
-                                cep_i = item.get("cep", "")
-                                partes_op = [logr_i]
-                                if numero:
-                                    partes_op.append(numero)
-                                partes_op.append(b_nome)
-                                partes_op.append(cid_i)
-                                if cep_i:
-                                    partes_op.append(cep_i)
-                                mapa_bairros_unicos[b_nome] = ", ".join(partes_op)
+            candidatos_faixa.sort(key=nota_candidato_viacep, reverse=True)
 
-                        if len(mapa_bairros_unicos) > 1:
-                            opcoes_bairros = list(mapa_bairros_unicos.values())
+            bateu_bairro_dica = []
+            if bairro_dica:
+                for item in candidatos_faixa:
+                    if similaridade_bairros(bairro_dica, item.get("bairro", "")) >= 0.78:
+                        bateu_bairro_dica.append(item)
 
-                    logradouro_oficial = escolhido.get("logradouro", "")
-                    bairro_oficial = escolhido.get("bairro", "")
-                    cidade_oficial = escolhido.get("localidade", cidade)
-                    cep_encontrado = escolhido.get("cep", "")
-        except Exception:
-            pass
+            if bateu_bairro_dica:
+                escolhido = bateu_bairro_dica[0]
+            elif bairro_dica and cid_teste != cidade:
+                # Se estamos testando uma cidade secundária, exige que o bairro_dica bata
+                continue
+            else:
+                escolhido = candidatos_faixa[0] if candidatos_faixa else dados_viacep[0]
 
+                if not bairro_dica:
+                    mapa_bairros_unicos = {}
+                    for item in candidatos_faixa:
+                        b_nome = item.get("bairro", "").strip()
+                        if b_nome and b_nome not in mapa_bairros_unicos:
+                            logr_i = item.get("logradouro") or rua.title()
+                            cid_i = item.get("localidade") or cid_teste
+                            cep_i = item.get("cep", "")
+                            partes_op = [logr_i]
+                            if numero:
+                                partes_op.append(numero)
+                            partes_op.append(b_nome)
+                            partes_op.append(cid_i)
+                            if cep_i:
+                                partes_op.append(cep_i)
+                            mapa_bairros_unicos[b_nome] = ", ".join(partes_op)
+
+                    if len(mapa_bairros_unicos) > 1:
+                        opcoes_bairros = list(mapa_bairros_unicos.values())
+
+            logradouro_oficial = escolhido.get("logradouro", "")
+            bairro_oficial = escolhido.get("bairro", "")
+            cidade_oficial = escolhido.get("localidade", cid_teste)
+            cep_encontrado = escolhido.get("cep", "")
+            break
+
+    # 2. Consulta ArcGIS Geocoder (APENAS aceita nome de rua/CEP se passar no filtro similaridade_ruas >= 0.72)
     rua_busca = logradouro_oficial if logradouro_oficial else rua
     bairro_busca = bairro_oficial if bairro_oficial else bairro_dica
     try:
@@ -631,34 +857,50 @@ def buscar_endereco_completo(endereco_bruto: str):
         url_arcgis = (
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
             f"?SingleLine={quote(query_geo)}&searchExtent=-44.50,-20.30,-43.50,-19.50"
-            f"&outFields=StName,StType,AddNum,Nbrhd,City,Postal&maxLocations=1&f=json"
+            f"&outFields=StName,StType,AddNum,Nbrhd,City,Postal&maxLocations=5&f=json"
         )
         resp_geo = requests.get(url_arcgis, timeout=5)
         if resp_geo.status_code == 200:
             cands = resp_geo.json().get("candidates", [])
-            if cands and cands[0].get("score", 0) >= 75:
-                melhor = cands[0]
-                lat_cand = float(melhor["location"]["y"])
-                lon_cand = float(melhor["location"]["x"])
-                if dentro_perimetro_rmbh(lat_cand, lon_cand):
-                    lat, lon = lat_cand, lon_cand
-                    atrib = melhor.get("attributes", {})
+            for cand in cands:
+                if cand.get("score", 0) < 75:
+                    continue
+                lat_cand = float(cand["location"]["y"])
+                lon_cand = float(cand["location"]["x"])
+                if not dentro_perimetro_rmbh(lat_cand, lon_cand):
+                    continue
 
-                    if not bairro_oficial and atrib.get("Nbrhd"):
-                        bairro_oficial = atrib.get("Nbrhd")
-                    if atrib.get("City"):
-                        cidade_oficial = atrib.get("City")
-                    if not cep_encontrado and atrib.get("Postal"):
-                        cep_raw = re.sub(r"\D", "", atrib.get("Postal", ""))
-                        if len(cep_raw) == 8:
-                            cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
-                    if not logradouro_oficial and atrib.get("StName"):
-                        st_type = atrib.get("StType", "")
-                        st_name = atrib.get("StName", "")
-                        logradouro_oficial = f"{st_type} {st_name}".strip()
+                atrib = cand.get("attributes", {})
+                st_type = atrib.get("StType", "")
+                st_name = atrib.get("StName", "")
+                rua_arcgis = f"{st_type} {st_name}".strip()
+
+                # Se já temos logradouro confirmado pelo ViaCEP, aceitamos a coordenada se a rua bater
+                if logradouro_oficial:
+                    if not rua_arcgis or similaridade_ruas(logradouro_oficial, rua_arcgis) >= 0.68:
+                        lat, lon = lat_cand, lon_cand
+                        break
+                else:
+                    # Se o ViaCEP não achou, SÓ aceitamos a sugestão do ArcGIS se o nome da rua bater de verdade!
+                    if rua_arcgis and similaridade_ruas(rua, rua_arcgis) >= 0.72:
+                        nbr_arc = atrib.get("Nbrhd", "")
+                        if bairro_dica and nbr_arc and similaridade_bairros(bairro_dica, nbr_arc) < 0.60:
+                            continue
+                        lat, lon = lat_cand, lon_cand
+                        logradouro_oficial = rua_arcgis
+                        if not bairro_oficial and nbr_arc:
+                            bairro_oficial = nbr_arc
+                        if atrib.get("City"):
+                            cidade_oficial = atrib.get("City")
+                        if not cep_encontrado and atrib.get("Postal"):
+                            cep_raw = re.sub(r"\D", "", atrib.get("Postal", ""))
+                            if len(cep_raw) == 8:
+                                cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
+                        break
     except Exception:
         pass
 
+    # 3. Se achou CEP pelo geocoder, busca no ViaCEP MAS valida se a rua do CEP é realmente a rua do cliente!
     if cep_encontrado and not opcoes_bairros:
         cep_digitos = re.sub(r"\D", "", cep_encontrado)
         if len(cep_digitos) == 8:
@@ -667,38 +909,61 @@ def buscar_endereco_completo(endereco_bruto: str):
                 if resp_cep_direto.status_code == 200:
                     d_cep = resp_cep_direto.json()
                     if not d_cep.get("erro"):
-                        logradouro_oficial = d_cep.get("logradouro") or logradouro_oficial
-                        bairro_oficial = d_cep.get("bairro") or bairro_oficial
-                        cidade_oficial = d_cep.get("localidade") or cidade_oficial
-                        cep_encontrado = d_cep.get("cep") or cep_encontrado
+                        logr_cep = d_cep.get("logradouro", "")
+                        if logr_cep and similaridade_ruas(rua, logr_cep) >= 0.72:
+                            logradouro_oficial = logr_cep
+                            bairro_oficial = d_cep.get("bairro") or bairro_oficial
+                            cidade_oficial = d_cep.get("localidade") or cidade_oficial
+                            cep_encontrado = d_cep.get("cep") or cep_encontrado
+                        elif not logradouro_oficial:
+                            # O CEP devolvido pelo geocoder pertence a outra rua diferente; descarta o CEP errado
+                            cep_encontrado = ""
             except Exception:
                 pass
 
-    if not cep_encontrado and cidade_oficial and len(rua_sem_prefixo) >= 3:
+    # 4. Se ainda não confirmou a rua, tenta Photon (OpenStreetMap) com validação de similaridade_ruas
+    if not logradouro_oficial:
         try:
-            url_viacep2 = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade_oficial))}/{quote(remover_acentos(rua_sem_prefixo))}/json/"
-            resp2 = requests.get(url_viacep2, timeout=5)
-            if resp2.status_code == 200:
-                dados2 = resp2.json()
-                if isinstance(dados2, list) and len(dados2) > 0:
-                    escolhido2 = dados2[0]
-                    if bairro_dica:
-                        dica_norm = remover_acentos(bairro_dica.lower())
-                        for item in dados2:
-                            b_item = remover_acentos(item.get("bairro", "").lower())
-                            if b_item and (b_item in dica_norm or dica_norm in b_item):
-                                escolhido2 = item
-                                break
-                    logradouro_oficial = logradouro_oficial or escolhido2.get("logradouro", "")
-                    bairro_oficial = bairro_oficial or escolhido2.get("bairro", "")
-                    cep_encontrado = escolhido2.get("cep", "")
+            q_ph = f"{rua} {numero} {bairro_dica} {cidade_oficial} MG"
+            url_ph = f"https://photon.komoot.io/api/?q={quote(q_ph)}&lat=-19.9167&lon=-43.9345&limit=6"
+            resp_ph = requests.get(url_ph, timeout=4)
+            if resp_ph.status_code == 200:
+                for feat in resp_ph.json().get("features", []):
+                    props = feat.get("properties", {})
+                    coords = feat.get("geometry", {}).get("coordinates", [])
+                    rua_ph = props.get("street") or props.get("name") or ""
+                    if len(coords) == 2 and rua_ph and similaridade_ruas(rua, rua_ph) >= 0.72:
+                        lon_p, lat_p = float(coords[0]), float(coords[1])
+                        if dentro_perimetro_rmbh(lat_p, lon_p):
+                            logradouro_oficial = rua_ph
+                            bairro_oficial = bairro_oficial or props.get("district") or props.get("suburb") or ""
+                            cidade_oficial = props.get("city") or cidade_oficial
+                            if not cep_encontrado and props.get("postcode"):
+                                cep_raw = re.sub(r"\D", "", str(props.get("postcode")))
+                                if len(cep_raw) == 8:
+                                    cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
+                            lat, lon = lat_p, lon_p
+                            break
         except Exception:
             pass
 
-    if not logradouro_oficial and lat is None:
-        return endereco_bruto, "❌ NÃO ENCONTRADO - CORRIGIR", None, None, []
+    if not logradouro_oficial:
+        # Nunca substitui por uma rua aleatória! Mantém os dados originais e alerta o usuário
+        partes_orig = [rua.title()]
+        if numero:
+            partes_orig.append(numero)
+        if bairro_dica:
+            partes_orig.append(bairro_dica.title())
+        partes_orig.append(cidade_oficial)
+        end_mantido = ", ".join(partes_orig)
 
-    nome_via_final = logradouro_oficial if logradouro_oficial else rua.title()
+        if bairro_dica:
+            ok_b, _, lat_b, lon_b = buscar_coordenada_bairro(bairro_dica, cidade_oficial)
+            if ok_b:
+                lat, lon = lat_b, lon_b
+        return end_mantido, "❌ RUA NÃO CONFIRMADA - CONFERIR", lat, lon, []
+
+    nome_via_final = logradouro_oficial
     bairro_final = bairro_oficial if bairro_oficial else (bairro_dica.title() if bairro_dica else "Bairro não identificado")
 
     partes_end = [nome_via_final]
@@ -923,11 +1188,19 @@ def chave_duplicidade(cliente: str, endereco: str) -> tuple:
     return (cli_norm, f"{rua_norm}_{num}")
 
 
+def atualizar_base_pedidos(novo_df: pd.DataFrame):
+    """Atualiza o DataFrame base e incrementa a chave do editor para sincronizar sem travar edições."""
+    df_limpo = novo_df.reset_index(drop=True).copy()
+    st.session_state["df_pedidos"] = df_limpo
+    st.session_state["df_pedidos_editados"] = df_limpo.copy()
+    st.session_state["versao_editor_pedidos"] = st.session_state.get("versao_editor_pedidos", 0) + 1
+
+
 def adicionar_pedidos_na_sessao(df_novos: pd.DataFrame):
     if df_novos.empty:
         return 0, []
 
-    df_atual = st.session_state.get("df_pedidos", pd.DataFrame())
+    df_atual = st.session_state.get("df_pedidos_editados", st.session_state.get("df_pedidos", pd.DataFrame()))
     chaves_existentes = set()
 
     if not df_atual.empty:
@@ -948,9 +1221,10 @@ def adicionar_pedidos_na_sessao(df_novos: pd.DataFrame):
     if linhas_validas:
         df_para_entrar = pd.DataFrame(linhas_validas)
         if df_atual.empty:
-            st.session_state["df_pedidos"] = df_para_entrar.reset_index(drop=True)
+            df_combinado = df_para_entrar.reset_index(drop=True)
         else:
-            st.session_state["df_pedidos"] = pd.concat([df_atual, df_para_entrar], ignore_index=True)
+            df_combinado = pd.concat([df_atual, df_para_entrar], ignore_index=True)
+        atualizar_base_pedidos(df_combinado)
 
     return len(linhas_validas), duplicados_ignorados
 
@@ -1318,8 +1592,20 @@ config_salva = carregar_config()
 if "df_pedidos" not in st.session_state:
     st.session_state["df_pedidos"] = pd.DataFrame()
 
+if "df_pedidos_editados" not in st.session_state:
+    st.session_state["df_pedidos_editados"] = pd.DataFrame()
+
+if "versao_editor_pedidos" not in st.session_state:
+    st.session_state["versao_editor_pedidos"] = 0
+
 if "df_rotas_calculadas" not in st.session_state:
     st.session_state["df_rotas_calculadas"] = pd.DataFrame()
+
+if "df_rotas_editadas" not in st.session_state:
+    st.session_state["df_rotas_editadas"] = pd.DataFrame()
+
+if "versao_editor_rotas" not in st.session_state:
+    st.session_state["versao_editor_rotas"] = 0
 
 if "nomes_rotas_ativas" not in st.session_state:
     st.session_state["nomes_rotas_ativas"] = []
@@ -1372,6 +1658,11 @@ with st.sidebar:
         })
         st.success("✅ Produtos/Partida salvos com sucesso!")
 
+    st.divider()
+    if st.button("🔒 Sair / Bloquear Acesso", use_container_width=True):
+        st.session_state["autenticado"] = False
+        st.rerun()
+
     locais_config = {
         "Local 1": [p for p in local_1.split(",") if p.strip()],
         "Local 2": [p for p in local_2.split(",") if p.strip()],
@@ -1385,12 +1676,14 @@ if (
     and st.session_state["coord_partida_atual"] != (lat_partida, lon_partida)
 ):
     df_reotim, novo_km, nova_coord = recalcular_todas_as_rotas(
-        st.session_state["df_rotas_calculadas"],
+        st.session_state.get("df_rotas_editadas", st.session_state["df_rotas_calculadas"]),
         st.session_state["nomes_rotas_ativas"],
         lat_partida,
         lon_partida
     )
     st.session_state["df_rotas_calculadas"] = df_reotim
+    st.session_state["df_rotas_editadas"] = df_reotim.copy()
+    st.session_state["versao_editor_rotas"] += 1
     st.session_state["resumo_km_rotas"] = novo_km
     st.session_state["coord_partida_atual"] = nova_coord
 
@@ -1434,7 +1727,7 @@ if st.session_state.get("avisos_duplicados"):
         st.session_state["avisos_duplicados"] = []
         st.rerun()
 
-# --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO (ISOLADO EM FRAGMENTO) ---
+# --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO ---
 if not st.session_state["df_pedidos"].empty:
     st.divider()
     total_pedidos = len(st.session_state["df_pedidos"])
@@ -1442,14 +1735,15 @@ if not st.session_state["df_pedidos"].empty:
 
     @st.fragment
     def render_passo_2():
-        df_atual = st.session_state["df_pedidos"].copy()
-        if "Excluir" not in df_atual.columns:
-            df_atual.insert(0, "Excluir", False)
-        if "Opcoes_Endereco" not in df_atual.columns:
-            df_atual["Opcoes_Endereco"] = "[]"
+        # Mantém df_base estável durante a digitação para nunca resetar células em edição!
+        df_base = st.session_state["df_pedidos"]
+        if "Excluir" not in df_base.columns:
+            df_base.insert(0, "Excluir", False)
+        if "Opcoes_Endereco" not in df_base.columns:
+            df_base["Opcoes_Endereco"] = "[]"
 
         linhas_ambiguas = []
-        for idx_amb, row_amb in df_atual.iterrows():
+        for idx_amb, row_amb in df_base.iterrows():
             try:
                 opcoes_lista = json.loads(row_amb.get("Opcoes_Endereco", "[]") or "[]")
             except Exception:
@@ -1473,26 +1767,27 @@ if not st.session_state["df_pedidos"].empty:
                 with col_btn_amb:
                     st.write("")
                     if st.button(f"✅ Confirmar ({nome_cli_amb})", key=f"btn_amb_{idx_amb}", use_container_width=True):
+                        df_sync = st.session_state.get("df_pedidos_editados", df_base).copy()
                         lat_novo, lon_novo = geocodificar_endereco_rua(escolha_end)
-                        df_atual.at[idx_amb, "Endereco"] = escolha_end
-                        df_atual.at[idx_amb, "Status"] = "✅ OK"
-                        df_atual.at[idx_amb, "Lat"] = lat_novo
-                        df_atual.at[idx_amb, "Lon"] = lon_novo
-                        df_atual.at[idx_amb, "Opcoes_Endereco"] = "[]"
-                        st.session_state["df_pedidos"] = df_atual
+                        df_sync.at[idx_amb, "Endereco"] = escolha_end
+                        df_sync.at[idx_amb, "Status"] = "✅ OK"
+                        df_sync.at[idx_amb, "Lat"] = lat_novo
+                        df_sync.at[idx_amb, "Lon"] = lon_novo
+                        df_sync.at[idx_amb, "Opcoes_Endereco"] = "[]"
+                        atualizar_base_pedidos(df_sync)
                         st.rerun()
 
-        problemas = df_atual[df_atual["Status"] != "✅ OK"]
+        problemas = df_base[df_base["Status"] != "✅ OK"]
         if not problemas.empty:
             st.warning(
                 f"⚠️ **{len(problemas)} endereço(s) precisam da sua atenção!** "
-                "Escolha o bairro acima ou corrija o endereço dando dois cliques na tabela abaixo."
+                "Escolha o bairro acima ou corrija o endereço na tabela abaixo e clique em '🔍 Buscar CEP após Editar Tabela'."
             )
         else:
-            st.success(f"✅ Todos os {total_pedidos} endereços foram localizados com Bairro e CEP!")
+            st.success(f"✅ Todos os {len(df_base)} endereços foram localizados com Bairro e CEP!")
 
         df_editado = st.data_editor(
-            df_atual,
+            df_base,
             use_container_width=True,
             hide_index=True,
             column_order=["Excluir", "Status", "Cliente", "Vendedor", "Pacotes", "Observacao", "Posicao", "Endereco", "Itens_Lidos"],
@@ -1512,13 +1807,12 @@ if not st.session_state["df_pedidos"].empty:
                 "Endereco": st.column_config.TextColumn("Endereço Completo (Editável)", width="large"),
                 "Itens_Lidos": st.column_config.TextColumn("Itens e Locais Identificados", disabled=True, width="medium"),
             },
-            key="editor_tabela_pedidos"
+            key=f"editor_tabela_pedidos_{st.session_state['versao_editor_pedidos']}"
         )
 
         df_editado["Cliente"] = df_editado["Cliente"].astype(str).str.upper()
-
-        # Atualiza o estado da sessão de forma segura sem sobrescrever ou travar a digitação contínua
-        st.session_state["df_pedidos"] = df_editado
+        # Guarda as edições em df_pedidos_editados sem sobrescrever df_pedidos (evita resetar a tabela durante digitação)
+        st.session_state["df_pedidos_editados"] = df_editado
 
         col_acao1, col_acao2, col_acao3 = st.columns(3)
 
@@ -1528,8 +1822,8 @@ if not st.session_state["df_pedidos"].empty:
                 use_container_width=True,
                 help="Use caso tenha alterado endereços na tabela e queira rebuscar o CEP e Bairro oficial."
             ):
-                with st.spinner("Buscando CEP e Bairro dos endereços alterados..."):
-                    df_atualizados = st.session_state["df_pedidos"].copy()
+                with st.spinner("Buscando CEP e Bairro dos endereços..."):
+                    df_atualizados = df_editado.copy()
                     for idx, row in df_atualizados.iterrows():
                         end_novo, novo_status, lat, lon, novas_opcoes = buscar_endereco_completo(row["Endereco"])
                         df_atualizados.at[idx, "Endereco"] = end_novo
@@ -1537,8 +1831,7 @@ if not st.session_state["df_pedidos"].empty:
                         df_atualizados.at[idx, "Lat"] = lat
                         df_atualizados.at[idx, "Lon"] = lon
                         df_atualizados.at[idx, "Opcoes_Endereco"] = json.dumps(novas_opcoes, ensure_ascii=False)
-                    st.session_state["df_pedidos"] = df_atualizados
-                    st.success("✅ Endereços atualizados com sucesso!")
+                    atualizar_base_pedidos(df_atualizados)
                     st.rerun()
 
         with col_acao2:
@@ -1548,20 +1841,22 @@ if not st.session_state["df_pedidos"].empty:
                 if qtd_marcados > 0:
                     df_restante = df_editado[~df_editado["Excluir"]].copy()
                     df_restante["Excluir"] = False
-                    st.session_state["df_pedidos"] = df_restante.reset_index(drop=True)
+                    atualizar_base_pedidos(df_restante)
                     st.session_state["df_rotas_calculadas"] = pd.DataFrame()
+                    st.session_state["df_rotas_editadas"] = pd.DataFrame()
                     st.rerun()
                 else:
                     st.toast("Marque a caixinha '🗑️' na tabela ao lado do cliente que deseja remover.")
 
         with col_acao3:
             if st.button("🧹 Limpar Lista", use_container_width=True):
-                st.session_state["df_pedidos"] = pd.DataFrame()
+                atualizar_base_pedidos(pd.DataFrame())
                 st.session_state["df_rotas_calculadas"] = pd.DataFrame()
+                st.session_state["df_rotas_editadas"] = pd.DataFrame()
                 st.session_state["avisos_duplicados"] = []
                 st.rerun()
 
-        with st.expander("👀 Ver prévia dos pedidos (Nomes e Endereços)", expanded=False):
+        with st.expander("👀 Ver prévia dos pedidos (Nomes e Endereços)", expanded=True):
             linhas_previa = []
             for _, row in df_editado.iterrows():
                 linhas_previa.append(f"{row['Endereco']}\n{montar_linha_cliente(row)}")
@@ -1573,8 +1868,8 @@ if not st.session_state["df_pedidos"].empty:
     st.divider()
     st.subheader("3️⃣ Dividir e Calcular Melhores Rotas")
 
-    df_editado_atual = st.session_state["df_pedidos"]
-    total_pedidos_atual = len(df_editado_atual)
+    df_para_calculo = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"])
+    total_pedidos_atual = len(df_para_calculo)
 
     qtd_rotas = st.radio(
         "Em quantas rotas deseja dividir os pedidos?",
@@ -1628,7 +1923,8 @@ if not st.session_state["df_pedidos"].empty:
         disabled=(soma_cotas != total_pedidos_atual or not partida_ok)
     ):
         with st.spinner("Agrupando regiões e calculando a melhor sequência rua a rua..."):
-            df_para_dividir = df_editado_atual.copy().reset_index(drop=True)
+            df_ mais_recente = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"]).copy().reset_index(drop=True)
+            atualizar_base_pedidos(df_mais_recente)
 
             nomes_unicos = []
             for idx_n, nm in enumerate(nomes_escolhidos):
@@ -1637,45 +1933,47 @@ if not st.session_state["df_pedidos"].empty:
                 nomes_unicos.append(nm)
 
             rotas_atribuidas = dividir_pedidos_por_cota(
-                df_para_dividir,
+                df_mais_recente,
                 nomes_unicos,
                 cotas_escolhidas,
                 lat_partida,
                 lon_partida
             )
-            df_para_dividir["Rota"] = rotas_atribuidas
+            df_mais_recente["Rota"] = rotas_atribuidas
 
             df_otimizado, resumo_km, coord_p = recalcular_todas_as_rotas(
-                df_para_dividir,
+                df_mais_recente,
                 nomes_unicos,
                 lat_partida,
                 lon_partida
             )
 
             st.session_state["df_rotas_calculadas"] = df_otimizado
+            st.session_state["df_rotas_editadas"] = df_otimizado.copy()
+            st.session_state["versao_editor_rotas"] += 1
             st.session_state["nomes_rotas_ativas"] = nomes_unicos
             st.session_state["resumo_km_rotas"] = resumo_km
             st.session_state["coord_partida_atual"] = coord_p
             st.rerun()
 
-# --- PASSO 4: ROTAS PRONTAS, TROCA ENTRE ROTAS E TEXTO PARA COPIAR (ISOLADO EM FRAGMENTO) ---
+# --- PASSO 4: ROTAS PRONTAS, TROCA ENTRE ROTAS E TEXTO PARA COPIAR ---
 if not st.session_state["df_rotas_calculadas"].empty:
     st.divider()
     st.subheader("4️⃣ Rotas Otimizadas e Ajuste Entre Rotas")
 
     @st.fragment
     def render_passo_4():
-        df_rotas = st.session_state["df_rotas_calculadas"].copy()
+        df_rotas_base = st.session_state["df_rotas_calculadas"]
         nomes_ativas = st.session_state["nomes_rotas_ativas"]
         resumo_km = st.session_state["resumo_km_rotas"]
 
         st.caption(
-            "💡 **Quer passar um pedido de uma rota para otra ou mudar quem é o PRIMEIRO/ÚLTIMO?** "
+            "💡 **Quer passar um pedido de uma rota para outra ou mudar quem é o PRIMEIRO/ÚLTIMO?** "
             "Basta alterar a coluna **'Rota'** ou **'Posição'** na tabela abaixo que o sistema recalcula a melhor ordem das rotas automaticamente!"
         )
 
         df_rotas_edit = st.data_editor(
-            df_rotas,
+            df_rotas_base,
             use_container_width=True,
             hide_index=True,
             column_order=["Rota", "Ordem", "Posicao", "Cliente", "Vendedor", "Pacotes", "Observacao", "Endereco"],
@@ -1699,16 +1997,16 @@ if not st.session_state["df_rotas_calculadas"].empty:
                 "Observacao": st.column_config.TextColumn("Obs ( )", width="small"),
                 "Endereco": st.column_config.TextColumn("Endereço", width="large"),
             },
-            key="editor_tabela_rotas"
-        )
-
-        mudou_rota_ou_pos = (
-            not df_rotas_edit["Rota"].equals(df_rotas["Rota"]) or
-            not df_rotas_edit["Posicao"].equals(df_rotas["Posicao"])
+            key=f"editor_tabela_rotas_{st.session_state['versao_editor_rotas']}"
         )
 
         df_rotas_edit["Cliente"] = df_rotas_edit["Cliente"].astype(str).str.upper()
-        st.session_state["df_rotas_calculadas"] = df_rotas_edit
+        st.session_state["df_rotas_editadas"] = df_rotas_edit
+
+        mudou_rota_ou_pos = (
+            not df_rotas_edit["Rota"].equals(df_rotas_base["Rota"]) or
+            not df_rotas_edit["Posicao"].equals(df_rotas_base["Posicao"])
+        )
 
         if mudou_rota_ou_pos and partida_ok:
             with st.spinner("Recalculando a melhor sequência das rotas após a alteração..."):
@@ -1719,13 +2017,17 @@ if not st.session_state["df_rotas_calculadas"].empty:
                     lon_partida
                 )
                 st.session_state["df_rotas_calculadas"] = df_reotimizado
+                st.session_state["df_rotas_editadas"] = df_reotimizado.copy()
+                st.session_state["versao_editor_rotas"] += 1
                 st.session_state["resumo_km_rotas"] = novo_km
                 st.session_state["coord_partida_atual"] = coord_p
                 st.rerun()
 
+        df_exibicao = st.session_state.get("df_rotas_editadas", df_rotas_base)
+
         with st.expander("🗺️ Ver Mapa das Rotas (Pinos Numerados por Ordem de Entrega)", expanded=True):
             renderizar_mapa_rotas(
-                st.session_state["df_rotas_calculadas"],
+                df_exibicao,
                 nomes_ativas,
                 st.session_state["coord_partida_atual"],
                 desc_partida_validada
@@ -1737,9 +2039,7 @@ if not st.session_state["df_rotas_calculadas"].empty:
         cols_texto = st.columns(min(len(nomes_ativas), 2))
 
         for idx_r, nome_r in enumerate(nomes_ativas):
-            sub_rota = st.session_state["df_rotas_calculadas"][
-                st.session_state["df_rotas_calculadas"]["Rota"] == nome_r
-            ]
+            sub_rota = df_exibicao[df_exibicao["Rota"] == nome_r]
             col_atual = cols_texto[idx_r % len(cols_texto)]
 
             with col_atual:
