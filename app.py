@@ -91,6 +91,13 @@ PREFIXOS_RUA = (
     "praca ", "praça ", "travessa ", "tv. ", "beco ", "rodovia ", "estrada ", "anel "
 )
 
+# Palavras que nunca são nomes de ruas (evita confundir "Pacote 1;" com endereço)
+PALAVRAS_NAO_ENDERECO = (
+    "pacote", "pct", "pedido", "ped", "item", "itens", "kit", "combo",
+    "sacola", "parte", "caixa", "obs", "observacao", "total", "valor",
+    "frete", "taxa", "troco", "pix", "pagamento", "cliente", "nome"
+)
+
 STOPWORDS_PRODUTOS = {"de", "do", "da", "dos", "das", "com", "sem", "e", "ou", "a", "o", "un", "pct", "gr", "kg", "ml"}
 
 CORES_ROTAS = ["#e63946", "#2a9d8f", "#3a86ff", "#ff9f1c"]
@@ -217,21 +224,98 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
     return qtd_pacotes, lista_locais_ordenada
 
 
-def eh_linha_endereco(linha: str) -> bool:
-    linha_limpa = remover_acentos(linha.strip().lower())
-    if not linha_limpa:
-        return False
-    if re.match(r"^\d+", linha_limpa):
-        return False
-    if linha_limpa.startswith(PREFIXOS_RUA):
+def eh_subtitulo_ou_divisoria(linha: str) -> bool:
+    """
+    Detecta linhas organizacionais dentro do pedido do mesmo cliente,
+    como 'Pacote 1;', 'Pacote 2:', 'Pedido 1', 'Itens:', '---'.
+    """
+    limpa = remover_acentos(linha.strip().lower())
+    if not limpa:
         return True
-    if re.search(r"[a-zA-Z]{3,}\s*,?\s*\d+", linha_limpa):
+    # Apenas traços ou pontuação
+    if re.match(r"^[-=_*.;:]+$", limpa):
+        return True
+    # Começa com Pacote 1, Pct 2, Pedido 1, Parte 1, Item 1, Kit 1, Sacola 1...
+    if re.match(r"^(pacote|pct|pedido|ped|item|itens|kit|combo|sacola|parte|caixa|produtos?|lista)\b\s*\d*\s*[;:.-]*$", limpa):
         return True
     return False
 
 
+def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
+    """
+    Diferencia com precisão um endereço real de linhas como 'Pacote 1;',
+    produtos ('10g skunk', '10 amnesia haze') ou observações.
+    """
+    bruta = linha.strip()
+    linha_limpa = remover_acentos(bruta.lower())
+    if not linha_limpa:
+        return False
+
+    # 1. Nunca é endereço se for subtítulo ('Pacote 1;', 'Pedido 2:') ou terminar com ';' ou ':'
+    if eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";") or bruta.endswith(":"):
+        return False
+
+    # 2. Nunca é endereço se começar com palavras de controle/pacote
+    for pal_proibida in PALAVRAS_NAO_ENDERECO:
+        if re.match(rf"^{pal_proibida}\b", linha_limpa):
+            return False
+
+    # 3. Se começar com rótulo explícito de endereço (ex: 'Endereço: ...', 'End: ...')
+    if re.match(r"^(endereco|end\.?|local|entrega)\s*[:\-]", linha_limpa):
+        return True
+
+    # 4. Se começar com número (ex: '10g skunk', '1@ byd', '5 uva', '10 amnesia'), é produto!
+    if re.match(r"^\d+", linha_limpa):
+        return False
+
+    # 5. Se começar com prefixo claro de via ('Rua ', 'Av ', 'Avenida ', 'Alameda ', etc.)
+    if linha_limpa.startswith(PREFIXOS_RUA):
+        return True
+
+    # 6. Caso não tenha 'Rua'/'Av' no início (ex: 'Batista Carneiro 112 Salgado Filho'):
+    # Verifica se contém unidades de produto coladas em número (ex: 'skunk 10g', 'colombia 5g', '1@')
+    if re.search(r"\b\d+\s*(g|gr|kg|ml|un|pct|x|@)\b", linha_limpa) or "@" in linha_limpa:
+        return False
+
+    # Verifica se a linha tem nome de via (mínimo 4 letras) seguido de número de imóvel
+    if re.search(r"[a-z]{4,}\s*,?\s*\d{1,5}\b", linha_limpa):
+        palavras_sem_num = re.findall(r"[a-z]{2,}", linha_limpa)
+        # Endereço sem 'Rua/Av' precisa ter pelo menos 2 palavras (ex: nome da rua + bairro ou nome composto)
+        if len(palavras_sem_num) >= 2:
+            return True
+
+    return False
+
+
+def eh_complemento_pos_endereco(linha: str) -> bool:
+    """Detecta se a linha seguinte ao endereço ainda faz parte dele (ex: CEP ou Bairro separado)."""
+    limpa = remover_acentos(linha.strip().lower())
+    if not limpa:
+        return False
+    if re.match(r"^(cep|bairro|apto|ap\.?|apartamento|bloco|bl\.?|casa|condominio|ed\.?|edificio)\b", limpa):
+        return True
+    if re.match(r"^\d{5}-?\d{3}$", limpa):
+        return True
+    return False
+
+
+def pode_ser_nome_cliente(linha: str) -> bool:
+    """Garante que uma linha de produto ou 'Pacote 1;' nunca vire nome de cliente."""
+    bruta = linha.strip()
+    limpa = remover_acentos(bruta.lower())
+    if not limpa:
+        return False
+    if eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";"):
+        return False
+    # Nome de cliente não começa com quantidade/número (ex: '10g', '1@', '5 ')
+    if re.match(r"^\d+", limpa):
+        return False
+    return True
+
+
 def separar_componentes_endereco(endereco_bruto: str):
-    end_limpo = endereco_bruto.strip()
+    # Remove rótulos como "Endereço:" caso existam
+    end_limpo = re.sub(r"^(endereco|end\.?|local|entrega)\s*[:\-]\s*", "", endereco_bruto.strip(), flags=re.IGNORECASE)
     cidade_detectada = detectar_cidade_rmbh(end_limpo)
 
     match_num = re.search(r"(?:,\s*|\s+)(\d+)\b(.*)$", end_limpo)
@@ -248,21 +332,14 @@ def separar_componentes_endereco(endereco_bruto: str):
 
 
 def dentro_perimetro_rmbh(lat: float, lon: float) -> bool:
-    """Garante que a coordenada encontrada está na Região Metropolitana de BH."""
     return (-20.40 <= lat <= -19.40) and (-44.60 <= lon <= -43.40)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
-    """
-    Busca exclusivamente um BAIRRO (suburb/neighbourhood) em BH e Região Metropolitana,
-    bloqueando resultados que sejam nomes de ruas (highway/StreetName) para nunca confundir
-    um bairro com uma rua de mesmo nome.
-    Retorna: (sucesso, descricao_validada, lat, lon)
-    """
     bairro_alvo_norm = remover_acentos(nome_bairro_limpo.lower()).strip()
 
-    # 1. Tenta OpenStreetMap (Nominatim) filtrando apenas bairros/subdistritos (ignora 'highway')
+    # 1. OpenStreetMap (Nominatim) filtrando bairros e bloqueando ruas ('highway')
     try:
         q_nom = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_nom = (
@@ -278,7 +355,6 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
                 tipo = item.get("type", "")
                 end_det = item.get("address", {})
 
-                # Bloqueia ruas, avenidas ou estabelecimentos comerciais
                 if cat in ("highway", "amenity", "shop", "tourism", "building"):
                     continue
 
@@ -306,7 +382,7 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     except Exception:
         pass
 
-    # 2. Tenta Photon (Komoot OpenStreetMap) filtrando apenas 'suburb' / 'neighbourhood' / 'district'
+    # 2. Photon (Komoot OpenStreetMap)
     try:
         q_photon = f"{nome_bairro_limpo} {cidade} Minas Gerais"
         url_photon = f"https://photon.komoot.io/api/?q={quote(q_photon)}&lat=-19.9167&lon=-43.9345&limit=10"
@@ -331,7 +407,7 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     except Exception:
         pass
 
-    # 3. Tenta ArcGIS restrito estritamente à categoria 'Neighborhood,Locality' (proibido retornar ruas)
+    # 3. ArcGIS restrito à categoria Neighborhood/Locality
     try:
         q_arc = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_arc = (
@@ -360,8 +436,6 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def geocodificar_endereco_rua(endereco_completo_texto: str):
-    """Obtém (lat, lon) de uma rua/endereço específico já padronizado."""
-    # 1. Tenta ArcGIS restrito à Região Metropolitana de BH
     try:
         q_geo = f"{endereco_completo_texto}, Minas Gerais, Brasil"
         url_arcgis = (
@@ -379,7 +453,6 @@ def geocodificar_endereco_rua(endereco_completo_texto: str):
     except Exception:
         pass
 
-    # 2. Fallback: Nominatim OpenStreetMap
     try:
         url_nom = (
             f"https://nominatim.openstreetmap.org/search"
@@ -416,7 +489,7 @@ def buscar_endereco_completo(endereco_bruto: str):
     cidade_oficial = cidade
     lat, lon = None, None
 
-    # 1. Consulta ViaCEP
+    # 1. Consulta ViaCEP pelo nome da rua
     if len(rua_sem_prefixo) >= 3:
         try:
             url_viacep = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade))}/{quote(remover_acentos(rua_sem_prefixo))}/json/"
@@ -439,7 +512,7 @@ def buscar_endereco_completo(endereco_bruto: str):
         except Exception:
             pass
 
-    # 2. Consulta ArcGIS Geocoder usando o bairro oficial para cravar a coordenada certa
+    # 2. Consulta ArcGIS Geocoder (tolera erros de digitação como 'Av silviano brandoa')
     rua_busca = logradouro_oficial if logradouro_oficial else rua
     bairro_busca = bairro_oficial if bairro_oficial else bairro_dica
     try:
@@ -468,10 +541,31 @@ def buscar_endereco_completo(endereco_bruto: str):
                         cep_raw = re.sub(r"\D", "", atrib.get("Postal", ""))
                         if len(cep_raw) == 8:
                             cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
+                    if not logradouro_oficial and atrib.get("StName"):
+                        st_type = atrib.get("StType", "")
+                        st_name = atrib.get("StName", "")
+                        logradouro_oficial = f"{st_type} {st_name}".strip()
     except Exception:
         pass
 
-    # 3. Segunda tentativa ViaCEP caso a cidade seja da RMBH
+    # 3. Se o ArcGIS achou o CEP (mesmo quando a rua estava com erro de digitação, ex: 'brandoa'),
+    # consulta o CEP no ViaCEP para obter o nome oficial perfeito da rua e do bairro!
+    if cep_encontrado:
+        cep_digitos = re.sub(r"\D", "", cep_encontrado)
+        if len(cep_digitos) == 8:
+            try:
+                resp_cep_direto = requests.get(f"https://viacep.com.br/ws/{cep_digitos}/json/", timeout=4)
+                if resp_cep_direto.status_code == 200:
+                    d_cep = resp_cep_direto.json()
+                    if not d_cep.get("erro"):
+                        logradouro_oficial = d_cep.get("logradouro") or logradouro_oficial
+                        bairro_oficial = d_cep.get("bairro") or bairro_oficial
+                        cidade_oficial = d_cep.get("localidade") or cidade_oficial
+                        cep_encontrado = d_cep.get("cep") or cep_encontrado
+            except Exception:
+                pass
+
+    # 4. Caso ainda não tenha CEP mas tenhamos o nome corrigido da rua/cidade
     if not cep_encontrado and cidade_oficial and len(rua_sem_prefixo) >= 3:
         try:
             url_viacep2 = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade_oficial))}/{quote(remover_acentos(rua_sem_prefixo))}/json/"
@@ -516,18 +610,10 @@ def buscar_endereco_completo(endereco_bruto: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def validar_e_geocodificar_partida(texto_partida: str):
-    """
-    Valida e geocodifica o Ponto de Partida dinamicamente, funcionando tanto para:
-    - Apenas Bairro (ex: 'Bairro Maria Goretti, Belo Horizonte', 'Santa Cruz', 'Savassi')
-    - Rua com ou sem número (ex: 'Rua Itaipu 760', 'Av Cristiano Machado 4000')
-    - CEP (ex: '31930-000')
-    Retorna: (sucesso_bool, texto_validado, lat, lon)
-    """
     bruto = str(texto_partida).strip()
     if not bruto:
         return False, "❌ Digite um bairro, rua ou CEP de partida.", None, None
 
-    # Caso 1: Usuário digitou um CEP (8 dígitos)
     apenas_digitos = re.sub(r"\D", "", bruto)
     if len(apenas_digitos) == 8:
         try:
@@ -549,14 +635,12 @@ def validar_e_geocodificar_partida(texto_partida: str):
     tem_prefixo_rua = texto_norm.startswith(PREFIXOS_RUA)
     tem_numero_imovel = bool(re.search(r"\b\d+\b", texto_norm))
 
-    # Caso 2: É um endereço de RUA (começa com Rua/Av ou possui número de imóvel)
     if tem_prefixo_rua or tem_numero_imovel:
         end_form, status_end, lat, lon = buscar_endereco_completo(bruto)
         if status_end.startswith("❌") or lat is None:
             return False, "❌ Endereço de partida não encontrado. Confira a rua/número.", None, None
         return True, f"Endereço: {end_form}", lat, lon
 
-    # Caso 3: É apenas um BAIRRO (ex: 'Bairro Maria Goretti, Belo Horizonte, MG' ou 'Santa Cruz')
     cidade_alvo = detectar_cidade_rmbh(bruto)
     nome_bairro = re.sub(r"\bbairro\b", "", bruto, flags=re.IGNORECASE)
     for cid in CIDADES_RMBH:
@@ -572,7 +656,6 @@ def validar_e_geocodificar_partida(texto_partida: str):
     if ok_b:
         return True, desc_b, lat_b, lon_b
 
-    # Última tentativa: caso o usuário tenha digitado o nome de uma rua sem a palavra "Rua" e sem número
     end_form, status_end, lat, lon = buscar_endereco_completo(bruto)
     if not status_end.startswith("❌") and lat is not None:
         return True, f"Via localizada: {end_form}", lat, lon
@@ -581,41 +664,71 @@ def validar_e_geocodificar_partida(texto_partida: str):
 
 
 def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
-    linhas = [l.strip() for l in texto_bruto.splitlines() if l.strip()]
+    """
+    Extrator universal tolerante a subdivisões ('Pacote 1;', 'Pacote 2;'),
+    linhas em branco, rótulos ('Cliente:', 'Endereço:') e complementos.
+    """
+    linhas_ cruas = [l.strip() for l in texto_bruto.splitlines() if l.strip()]
 
     pedidos = []
     nome_atual = None
     itens_atuais = []
 
-    for linha in linhas:
+    i = 0
+    total_linhas = len(linhas_cruas)
+
+    while i < total_linhas:
+        linha = linhas_cruas[i]
+
+        # Ignora linhas que são apenas divisórias ou cabeçalhos de pacotes ('Pacote 1;', 'Pacote 2;')
+        if eh_subtitulo_ou_divisoria(linha):
+            i += 1
+            continue
+
+        # Caso ainda não tenhamos o nome do cliente do bloco atual
         if nome_atual is None:
-            nome_atual = linha.upper().strip()
+            if pode_ser_nome_cliente(linha) and not eh_linha_endereco(linha, locais_dict):
+                nome_limpo = re.sub(r"^(cliente|nome)\s*[:\-]\s*", "", linha, flags=re.IGNORECASE).strip()
+                nome_atual = nome_limpo.upper()
+                itens_atuais = []
+            i += 1
+            continue
+
+        # Se já temos um cliente aberto, verifica se a linha atual é o endereço final dele
+        if eh_linha_endereco(linha, locais_dict):
+            texto_endereco = linha
+
+            # Se a linha seguinte for complemento direto do endereço (ex: CEP ou 'Bairro X'), junta ao endereço
+            while (i + 1) < total_linhas and eh_complemento_pos_endereco(linhas_cruas[i + 1]):
+                texto_endereco += f", {linhas_cruas[i + 1]}"
+                i += 1
+
+            qtd_pct, locais_detectados = identificar_locais_dos_itens(itens_atuais, locais_dict)
+            end_completo, status, lat, lon = buscar_endereco_completo(texto_endereco)
+            resumo_itens = ", ".join(itens_atuais)
+            if locais_detectados:
+                resumo_itens += f" ➔ [{', '.join(locais_detectados)}]"
+
+            pedidos.append({
+                "Excluir": False,
+                "Status": status,
+                "Cliente": nome_atual,
+                "Vendedor": vendedor_padrao.upper().strip(),
+                "Pacotes": qtd_pct,
+                "Observacao": "",
+                "Posicao": "Normal",
+                "Endereco": end_completo,
+                "Itens_Lidos": resumo_itens,
+                "Lat": lat,
+                "Lon": lon
+            })
+            nome_atual = None
             itens_atuais = []
         else:
-            if eh_linha_endereco(linha):
-                qtd_pct, locais_detectados = identificar_locais_dos_itens(itens_atuais, locais_dict)
-                end_completo, status, lat, lon = buscar_endereco_completo(linha)
-                resumo_itens = ", ".join(itens_atuais)
-                if locais_detectados:
-                    resumo_itens += f" ➔ [{', '.join(locais_detectados)}]"
+            # É linha de produto do cliente atual
+            itens_atuais.append(linha)
 
-                pedidos.append({
-                    "Excluir": False,
-                    "Status": status,
-                    "Cliente": nome_atual,
-                    "Vendedor": vendedor_padrao.upper().strip(),
-                    "Pacotes": qtd_pct,
-                    "Observacao": "",
-                    "Posicao": "Normal",
-                    "Endereco": end_completo,
-                    "Itens_Lidos": resumo_itens,
-                    "Lat": lat,
-                    "Lon": lon
-                })
-                nome_atual = None
-                itens_atuais = []
-            else:
-                itens_atuais.append(linha)
+        i += 1
 
     return pd.DataFrame(pedidos)
 
@@ -1021,7 +1134,6 @@ with st.sidebar:
         help="Pode digitar apenas o bairro (ex: 'Bairro Maria Goretti' ou 'Savassi'), uma rua com número ou um CEP."
     )
 
-    # Validação ao vivo do Ponto de Partida
     partida_ok, desc_partida_validada, lat_partida, lon_partida = validar_e_geocodificar_partida(ponto_partida)
     if partida_ok:
         st.success(f"✅ **Partida localizada:**\n{desc_partida_validada}")
@@ -1054,7 +1166,6 @@ with st.sidebar:
         "Local 4": [p for p in local_4.split(",") if p.strip()],
     }
 
-# Se já havia rotas geradas e o usuário mudou o ponto de partida na barra lateral, recalcula automaticamente
 if (
     partida_ok
     and not st.session_state["df_rotas_calculadas"].empty
