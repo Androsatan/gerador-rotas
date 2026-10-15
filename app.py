@@ -531,7 +531,7 @@ if not st.session_state["df_pedidos"].empty:
 
     with col_acao2:
         qtd_marcados = int(df_editado["Excluir"].sum()) if "Excluir" in df_editado.columns else 0
-        texto_btn_excluir = f"🗑️ Excluir Marcados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Marcados"
+        texto_btn_excluir = f"🗑️ Excluir Selecionados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Marcados"
         if st.button(texto_btn_excluir, use_container_width=True):
             if qtd_marcados > 0:
                 df_restante = df_editado[~df_editado["Excluir"]].copy()
