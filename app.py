@@ -9,16 +9,49 @@ from urllib.parse import quote
 
 st.set_page_config(page_title="Gerador de Rotas", page_icon="🛵", layout="wide")
 
-# CSS para garantir responsividade no celular e impedir que botões cortem o texto com "..."
+# CSS reforçado: impede "..." dentro dos botões e empilha colunas em janelas reduzidas
 st.markdown("""
 <style>
-div.stButton > button {
+/* Botão externo */
+div.stButton > button,
+div.stFormSubmitButton > button {
     white-space: normal !important;
     word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
     height: auto !important;
     min-height: 2.8rem !important;
-    padding: 0.5rem 0.75rem !important;
-    line-height: 1.3 !important;
+    padding: 0.5rem 0.6rem !important;
+}
+
+/* Elementos internos do botão (onde o Streamlit aplica o "...") */
+div.stButton > button *,
+div.stFormSubmitButton > button * {
+    white-space: normal !important;
+    word-wrap: break-word !important;
+    overflow-wrap: break-word !important;
+    text-overflow: clip !important;
+    overflow: visible !important;
+    line-height: 1.25 !important;
+    text-align: center !important;
+}
+
+/* Quebra de linha automática na caixa de prévia de código */
+pre, code {
+    white-space: pre-wrap !important;
+    word-break: break-word !important;
+}
+
+/* Quando a janela estiver reduzida, empilha as colunas para os botões ficarem largos */
+@media (max-width: 980px) {
+    div[data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+    }
+    div[data-testid="column"],
+    div[data-testid="stColumn"] {
+        width: 100% !important;
+        flex: 1 1 100% !important;
+        min-width: 100% !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -42,10 +75,10 @@ PREFIXOS_RUA = (
 def carregar_config():
     padrao = {
         "ponto_partida": "Bairro Maria Goretti, Belo Horizonte, MG",
-        "local_1": "",
-        "local_2": "",
-        "local_3": "",
-        "local_4": ""
+        "local_1": "skunk, orange amnesia, silver, wolf, super sheep",
+        "local_2": "ice, pak, paki, dry, pod, colombia gold, uva",
+        "local_3": "@, md, lsd",
+        "local_4": "pren"
     }
     if os.path.exists(ARQUIVO_CONFIG):
         try:
@@ -338,13 +371,13 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("📦Locais(Pacotes)")
+    st.header("📦 Locais (Pacotes)")
     st.caption("Separe os produtos por vírgula e clique em Salvar abaixo.")
 
-    local_1 = st.text_area("Local de Saída 1:", value=config_salva.get("local_1", ""), placeholder="Ex: amendoim, amendoins, amendoa, quebra noz", height=70)
-    local_2 = st.text_area("Local de Saída 2:", value=config_salva.get("local_2", ""), placeholder="Ex: granola", height=70)
-    local_3 = st.text_area("Local de Saída 3:", value=config_salva.get("local_3", ""), placeholder="Ex: castanha", height=70)
-    local_4 = st.text_area("Local de Saída 4:", value=config_salva.get("local_4", ""), placeholder="Produtos do Local 4...", height=70)
+    local_1 = st.text_area("Local de Saída 1:", value=config_salva.get("local_1", ""), height=70)
+    local_2 = st.text_area("Local de Saída 2:", value=config_salva.get("local_2", ""), height=70)
+    local_3 = st.text_area("Local de Saída 3:", value=config_salva.get("local_3", ""), height=70)
+    local_4 = st.text_area("Local de Saída 4:", value=config_salva.get("local_4", ""), height=70)
 
     if st.button("💾 Salvar Produtos/Partida", type="primary", use_container_width=True):
         salvar_config({
@@ -373,7 +406,7 @@ aba_lote, aba_individual = st.tabs([
 
 with aba_lote:
     texto_pedidos = st.text_area(
-        "Cole os pedidos abaixo (eles serão adicionados a lista):",
+        "Cole os pedidos abaixo (eles serão adicionados à lista):",
         height=200,
         placeholder=(
             "Exemplo:\ngustavo ramos\n5g amendoim\n1 quebra noz\nAv flor de seda 1030, lindeia\n\n"
@@ -384,7 +417,7 @@ with aba_lote:
         "Sigla do Vendedor `[ ]` para os pedidos acima:",
         placeholder="Ex: 2T, VG, NK"
     )
-    if st.button("🔍Adicionar a Lista", type="primary", use_container_width=True):
+    if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True):
         if texto_pedidos.strip():
             with st.spinner("Extraindo pedidos e buscando CEPs e Bairros..."):
                 df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
@@ -392,7 +425,7 @@ with aba_lote:
                     adicionar_pedidos_na_sessao(df_extraidos)
                     st.success(f"✅ {len(df_extraidos)} pedido(s) adicionado(s) à lista!")
                 else:
-                    st.warning("⚠️Não foi possível identificar um endereço válido no texto colado.")
+                    st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
         else:
             st.warning("Cole pelo menos um pedido antes de clicar em extrair.")
 
@@ -412,7 +445,7 @@ with aba_individual:
         submitted_ind = st.form_submit_button("➕ Adicionar Cliente à Lista", type="primary", use_container_width=True)
         if submitted_ind:
             if not nome_ind.strip() or not end_ind.strip():
-                st.error("⚠️Preencha pelo menos o Nome do Cliente e o Endereço.")
+                st.error("⚠️ Preencha pelo menos o Nome do Cliente e o Endereço.")
             else:
                 with st.spinner("Buscando CEP e Bairro do endereço..."):
                     end_comp, status_ind, lat_ind, lon_ind = buscar_endereco_completo(end_ind)
@@ -450,7 +483,7 @@ if not st.session_state["df_pedidos"].empty:
     if not problemas.empty:
         st.warning(
             f"⚠️ **{len(problemas)} endereço(s) precisam da sua atenção!** "
-            "Edite o endereço na tabela abaixo e clique em **'🔄 Rebuscar Endereços Editados'**."
+            "Edite o endereço na tabela abaixo e clique em **'🔄 Atualizar Endereços'**."
         )
     else:
         st.success(f"✅ Todos os {len(df_atual)} endereços foram localizados com Bairro e CEP!")
@@ -481,11 +514,11 @@ if not st.session_state["df_pedidos"].empty:
     df_editado["Cliente"] = df_editado["Cliente"].astype(str).str.upper()
     st.session_state["df_pedidos"] = df_editado
 
-    # Botões de ação responsivos (empilham automaticamente no celular)
+    # Botões de ação responsivos
     col_acao1, col_acao2, col_acao3 = st.columns(3)
 
     with col_acao1:
-        if st.button("🔄 Rebuscar Endereços Editados", use_container_width=True):
+        if st.button("🔄 Atualizar Endereços", use_container_width=True):
             with st.spinner("Atualizando endereços..."):
                 for idx, row in df_editado.iterrows():
                     end_novo, novo_status, lat, lon = buscar_endereco_completo(row["Endereco"])
@@ -498,7 +531,7 @@ if not st.session_state["df_pedidos"].empty:
 
     with col_acao2:
         qtd_marcados = int(df_editado["Excluir"].sum()) if "Excluir" in df_editado.columns else 0
-        texto_btn_excluir = f"🗑️ Excluir Selecionados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Selecionados"
+        texto_btn_excluir = f"🗑️ Excluir Marcados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Marcados"
         if st.button(texto_btn_excluir, use_container_width=True):
             if qtd_marcados > 0:
                 df_restante = df_editado[~df_editado["Excluir"]].copy()
@@ -506,15 +539,15 @@ if not st.session_state["df_pedidos"].empty:
                 st.session_state["df_pedidos"] = df_restante.reset_index(drop=True)
                 st.rerun()
             else:
-                st.toast("Marque a caixinha '🗑️ Excluir' na tabela ao lado do cliente que deseja remover.")
+                st.toast("Marque a caixinha '🗑️' na tabela ao lado do cliente que deseja remover.")
 
     with col_acao3:
-        if st.button("🧹 Limpar Toda a Lista", use_container_width=True):
+        if st.button("🧹 Limpar Lista", use_container_width=True):
             st.session_state["df_pedidos"] = pd.DataFrame()
             st.rerun()
 
-    with st.expander("👀 Ver prévia ddos pedidos", expanded=True):
+    with st.expander("👀 Ver prévia dos pedidos", expanded=True):
         linhas_previa = []
         for _, row in df_editado.iterrows():
             linhas_previa.append(f"{row['Endereco']}\n{montar_linha_cliente(row)}")
-        st.code("\n\n".join(linhas_previa), language="text")
+        st.code("\n\n".join(linhas_previa), language="text", wrap_lines=True)
