@@ -101,8 +101,6 @@ STOPWORDS_PRODUTOS = {"de", "do", "da", "dos", "das", "com", "sem", "e", "ou", "
 
 CORES_ROTAS = ["#e63946", "#2a9d8f", "#3a86ff", "#ff9f1c"]
 
-# Regex para detectar cabeçalho de mensagens copiadas do Telegram ou WhatsApp
-# Ex: "[14/10/2026 13:53] 2K: Kaique inacio" ou "14/10/2026 13:53 - Nome: texto"
 REGEX_CABECALHO_CHAT = re.compile(
     r"^\s*\[?\d{1,2}/\d{1,2}(?:/\d{2,4})?\s*[,\-]?\s*\d{1,2}:\d{2}(?::\d{2})?\]?\s*(?:-\s*)?[^:\n]{1,35}:\s*(.*)$"
 )
@@ -112,9 +110,9 @@ REGEX_CABECALHO_CHAT = re.compile(
 def carregar_config():
     padrao = {
         "ponto_partida": "Bairro Maria Goretti, Belo Horizonte, MG",
-        "local_1": "skunk, orange amnesia, silver, wolf, super sheep",
-        "local_2": "ice, pak, paki, dry, pod, colombia gold, uva",
-        "local_3": "@, md, lsd",
+        "local_1": "skunk, orange, amnesia, silver, wolf, super sheep, og kush, indoor, zowahh",
+        "local_2": "ice, pak, dry, pod, colombia gold, uva",
+        "local_3": "@, md, lsd, pacote gd",
         "local_4": "pren"
     }
     if os.path.exists(ARQUIVO_CONFIG):
@@ -150,8 +148,8 @@ def detectar_cidade_rmbh(texto: str) -> str:
 
 def extrair_palavras_item(texto_linha: str) -> list:
     limpo = remover_acentos(texto_linha.lower())
-    # Remove números inteiros, decimais (12.5g, 12,5) e frações (7/5)
-    limpo = re.sub(r"\b\d+(?:[.,/]\d+)?\s*(g|gr|kg|ml|l|un|pct|x)?\b", " ", limpo)
+    # Remove números inteiros, decimais (12.5g, 12,5), frações (7/5) e símbolos (#)
+    limpo = re.sub(r"\b\d+(?:[.,/]\d+)?\s*(g|gr|kg|ml|l|un|pct|x|#)?\b", " ", limpo)
     palavras = re.findall(r"[a-z0-9@]+", limpo)
     return [p for p in palavras if p not in STOPWORDS_PRODUTOS and len(p) >= 2]
 
@@ -168,6 +166,10 @@ def similaridade_palavras(palavra_cliente: str, palavra_cadastro: str) -> float:
 
 
 def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
+    """
+    Analisa todos os itens do pedido (inclusive quando vêm vários produtos na mesma linha
+    separados por '+' ou entre parênteses) e identifica de quais locais saem.
+    """
     locais_acionados = set()
 
     vocab_locais = {}
@@ -181,36 +183,39 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
                 p for p in re.findall(r"[a-z0-9@]+", prod_norm)
                 if p not in STOPWORDS_PRODUTOS
             ]
-            # Também guarda a versão colada sem espaço (ex: 'super sheep' -> 'supersheep')
             colado = "".join(palavras_prod)
             if colado and colado not in palavras_prod:
                 palavras_prod.append(colado)
             frases_e_palavras.append((prod_norm, palavras_prod))
         vocab_locais[nome_local] = frases_e_palavras
 
+    # Divide linhas que contenham '+' (ex: '( 5g colombia + 5g Colômbia + 1g Dry )') em sub-itens
+    sub_itens = []
     for linha in itens_pedido:
-        linha_norm = remover_acentos(linha.strip().lower())
+        partes_plus = re.split(r"[+;]", linha)
+        for p in partes_plus:
+            if p.strip():
+                sub_itens.append(p.strip())
+
+    for item_str in sub_itens:
+        linha_norm = remover_acentos(item_str.lower()).strip(" ()[]")
         if not linha_norm:
             continue
 
-        local_encontrado_direto = False
+        # 1. Verifica frases exatas ou símbolos ('@', 'md', 'lsd', 'pacote gd', etc.)
         for nome_local, lista_fp in vocab_locais.items():
             for frase_completa, _ in lista_fp:
                 frase_sem_espaco = frase_completa.replace(" ", "")
-                if frase_completa in ("@", "md", "lsd") and re.search(rf"(?:^|\d|\s){re.escape(frase_completa)}(?:$|\s)", linha_norm):
+                if frase_completa in ("@", "md", "lsd") and re.search(rf"(?:^|\d|\s|#){re.escape(frase_completa)}(?:$|\s)", linha_norm):
                     locais_acionados.add(nome_local)
-                    local_encontrado_direto = True
-                elif len(frase_completa) >= 3 and (frase_completa in linha_norm or (len(frase_sem_espaco) >= 5 and frase_sem_espaco in linha_norm)):
+                elif len(frase_completa) >= 3 and (
+                    re.search(rf"\b{re.escape(frase_completa)}\b", linha_norm)
+                    or (len(frase_sem_espaco) >= 5 and frase_sem_espaco in linha_norm)
+                ):
                     locais_acionados.add(nome_local)
-                    local_encontrado_direto = True
 
-        if local_encontrado_direto:
-            continue
-
+        # 2. Avalia palavra por palavra para pegar abreviações e erros de digitação
         palavras_cliente = extrair_palavras_item(linha_norm)
-        melhor_local_linha = None
-        maior_nota_linha = 0.0
-
         for pal_cli in palavras_cliente:
             melhor_local_palavra = None
             maior_nota_palavra = 0.0
@@ -223,12 +228,8 @@ def identificar_locais_dos_itens(itens_pedido: list, locais_dict: dict):
                             maior_nota_palavra = nota
                             melhor_local_palavra = nome_local
 
-            if maior_nota_palavra >= 0.74 and maior_nota_palavra > maior_nota_linha:
-                maior_nota_linha = maior_nota_palavra
-                melhor_local_linha = melhor_local_palavra
-
-        if melhor_local_linha:
-            locais_acionados.add(melhor_local_linha)
+            if maior_nota_palavra >= 0.76 and melhor_local_palavra:
+                locais_acionados.add(melhor_local_palavra)
 
     lista_locais_ordenada = sorted(list(locais_acionados))
     qtd_pacotes = max(1, len(lista_locais_ordenada))
@@ -241,29 +242,61 @@ def eh_subtitulo_ou_divisoria(linha: str) -> bool:
         return True
     if re.match(r"^[-=_*.;:]+$", limpa):
         return True
-    # Ex: 'Pacote 1;', 'Pacote 2:', 'Pedido 1;', 'Itens:'
     if re.match(r"^(pacote|pct|pedido|ped|item|itens|kit|combo|sacola|parte|caixa|produtos?|lista)\b\s*\d*\s*[;:.-]*$", limpa):
         return True
     return False
 
 
+def texto_parece_produto_cadastrado(texto_sem_num: str, locais_dict: dict) -> bool:
+    """Verifica se o texto antes de um número é na verdade o nome de um produto cadastrado."""
+    if not locais_dict:
+        return False
+    palavras = [p for p in re.findall(r"[a-z]+", remover_acentos(texto_sem_num.lower())) if len(p) >= 3]
+    if not palavras:
+        return False
+
+    for lista_prods in locais_dict.values():
+        for prod in lista_prods:
+            p_cads = re.findall(r"[a-z]+", remover_acentos(prod.lower()))
+            for pal in palavras:
+                for pc in p_cads:
+                    if similaridade_palavras(pal, pc) >= 0.80:
+                        return True
+    return False
+
+
 def eh_linha_produto_clara(linha: str, locais_dict: dict = None) -> bool:
-    """Identifica se a linha é claramente um item/produto (ex: '10g uva', '12,5 pren', '7/5 amnesia')."""
+    """Identifica linhas que são claramente produtos (ex: '10g uva', '( 5g colombia + 1g Dry )', '2# lsd', 'Pacote GD')."""
     bruta = linha.strip()
-    limpa = remover_acentos(bruta.lower())
+    limpa = remover_acentos(bruta.lower()).strip(" ()[]")
     if not limpa or eh_subtitulo_ou_divisoria(bruta):
         return False
-    # Começa com quantidade numérica (inteiro, decimal com ponto/vírgula ou fração: 10g, 12.5G, 12,5, 7/5, 1@)
-    if re.match(r"^\d+(?:[.,/]\d+)?\s*([a-z@%]+\b)?", limpa):
+    # Começa com quantidade numérica (ex: 5g, 12.5G, 12,5, 7/5, 1@, 2#)
+    if re.match(r"^\d+(?:[.,/]\d+)?\s*([a-z@#%]+\b)?", limpa):
+        return True
+    # Começa com 'pacote ' (ex: 'Pacote GD')
+    if re.match(r"^(pacote|pct)\s+[a-z0-9]+", limpa):
         return True
     return False
 
 
 def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
+    """
+    Reconhece qualquer formato de endereço em BH/RMBH, incluindo:
+    - Com prefixo ('Rua ...', 'Av ...')
+    - Bairro antes da rua ('Granja de Freitas rua São Vicente 530')
+    - Sem 'Rua' e com bairro ('Batista Carneiro 112 Salgado Filho', 'Paulo Brandão 77 santa efigenia')
+    - Apenas 1 nome de rua + número ('timbiras 2898', 'Lambari 403')
+    """
     bruta = linha.strip()
-    linha_limpa = remover_acentos(bruta.lower())
-    if not linha_limpa:
+    if not bruta:
         return False
+
+    # Linhas entre parênteses como '( 5g colombia + 1g Dry )' são produtos/observações
+    if bruta.startswith("(") and bruta.endswith(")"):
+        return False
+
+    linha_limpa = remover_acentos(bruta.lower())
 
     if eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";") or bruta.endswith(":"):
         return False
@@ -275,26 +308,33 @@ def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
     if re.match(r"^(endereco|end\.?|local|entrega)\s*[:\-]", linha_limpa):
         return True
 
-    # Se começa com número (10g, 12.5G, 12,5, 7/5, 1@), é produto e nunca endereço
+    # Se começa com número (5g, 10, 2#, 1@), é produto
     if re.match(r"^\d+", linha_limpa):
         return False
 
-    # Começa com prefixo de rua (Rua, Av, Avenida...)
+    # Começa com Rua, Av, Avenida, Alameda, etc.
     if linha_limpa.startswith(PREFIXOS_RUA):
         return True
 
-    # Ou tem prefixo de rua no meio da frase (ex: 'Granja de Freitas rua São Vicente 530')
+    # Contém Rua/Avenida no meio da linha + número (ex: 'Granja de Freitas rua São Vicente 530')
     if re.search(r"\b(rua|avenida|av\.?|alameda|travessa|praca|rodovia)\s+[a-z]{3,}", linha_limpa) and re.search(r"\b\d{1,5}\b", linha_limpa):
         return True
 
-    # Se tiver unidade de grama/arroba colada em número, é produto
-    if re.search(r"\b\d+(?:[.,/]\d+)?\s*(g|gr|kg|ml|un|pct|x|@)\b", linha_limpa) or "@" in linha_limpa:
+    # Se tiver unidade de produto colada em número (5g, 50g, 1@, 2#), é produto
+    if re.search(r"\b\d+(?:[.,/]\d+)?\s*(g|gr|kg|ml|un|pct|x|@|#)\b", linha_limpa) or "@" in linha_limpa or "#" in linha_limpa:
         return False
 
-    # Rua sem prefixo seguida de número (ex: 'itaparica 420, portao verde')
-    if re.search(r"[a-z]{4,}\s*,?\s*\d{1,5}\b", linha_limpa):
-        palavras_sem_num = re.findall(r"[a-z]{2,}", linha_limpa)
-        if len(palavras_sem_num) >= 2:
+    # Verifica padrão de rua sem prefixo 'Rua/Av' seguida de número (ex: 'timbiras 2898', 'Lambari 403', 'itaparica 420, portao verde')
+    match_via_num = re.search(r"^([a-z\s.,'-]{3,}?)\s*[,.]?\s*(\d{1,5})\b", linha_limpa)
+    if match_via_num:
+        nome_antes_num = match_via_num.group(1).strip(" ,.-")
+        palavras_todas = re.findall(r"[a-z]{2,}", linha_limpa)
+        # Se tem 2 ou mais palavras (ex: 'Paulo Brandão 77 santa efigenia') é endereço
+        if len(palavras_todas) >= 2:
+            return True
+        # Se tem apenas 1 palavra + número (ex: 'timbiras 2898', 'Lambari 403'),
+        # confirma que essa palavra tem pelo menos 4 letras e não é um produto cadastrado
+        if len(nome_antes_num) >= 4 and not texto_parece_produto_cadastrado(nome_antes_num, locais_dict):
             return True
 
     return False
@@ -312,7 +352,6 @@ def eh_complemento_pos_endereco(linha: str) -> bool:
 
 
 def limpar_nome_cliente(linha: str) -> str:
-    """Remove prefixos como 'Cliente:', 'Nome:' ou 'Pedido ' do início do nome do cliente."""
     nome = re.sub(r"^(cliente|nome|pedido|ped)\s*[:\-]?\s+", "", linha.strip(), flags=re.IGNORECASE)
     return nome.strip().upper()
 
@@ -322,24 +361,24 @@ def pode_ser_nome_cliente(linha: str) -> bool:
     limpa = remover_acentos(bruta.lower())
     if not limpa:
         return False
-    if eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";"):
+    if bruta.startswith("(") or eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";"):
         return False
     if re.match(r"^\d+", limpa):
+        return False
+    if re.match(r"^(pacote|pct)\b", limpa):
         return False
     return True
 
 
 def separar_componentes_endereco(endereco_bruto: str):
     """
-    Separa Rua, Número, Bairro (dica) e Cidade, tratando inclusive:
-    - Bairro escrito antes da rua ('Granja de Freitas rua São Vicente 530')
-    - Apartamento/complemento no meio ('Rua sao paulo 1190, ap 1203 centro')
+    Separa Rua, Número, Bairro (dica) e Cidade limpando pontuações como
+    'costa. 321 , Bairro : santa amelia' ou 'ap 504 bairro santo antonio'.
     """
     end_limpo = re.sub(r"^(endereco|end\.?|local|entrega)\s*[:\-]\s*", "", endereco_bruto.strip(), flags=re.IGNORECASE)
     cidade_detectada = detectar_cidade_rmbh(end_limpo)
 
     bairro_antes_da_rua = ""
-    # Verifica se o bairro veio ANTES da palavra 'rua'/'av' (ex: 'Granja de Freitas rua São Vicente 530')
     match_meio = re.search(
         r"^(.+?)\s+\b(rua|r\.|avenida|av\.|av|alameda|al\.|travessa|tv\.|praca|praça|beco|rodovia)\s+(.+)$",
         end_limpo,
@@ -351,37 +390,40 @@ def separar_componentes_endereco(endereco_bruto: str):
             bairro_antes_da_rua = possivel_bairro_antes
             end_limpo = f"{match_meio.group(2)} {match_meio.group(3)}"
 
-    match_num = re.search(r"(?:,\s*|\s+)(\d+)\b(.*)$", end_limpo)
+    # Aceita ponto, vírgula ou espaço antes do número (ex: 'costa. 321')
+    match_num = re.search(r"(?:[,.]\s*|\s+)(\d+)\b(.*)$", end_limpo)
     if match_num:
         rua = end_limpo[:match_num.start()].strip(" ,.-")
         numero = match_num.group(1).strip()
         resto = match_num.group(2).strip(" ,.-")
     else:
-        rua = end_limpo
+        rua = end_limpo.strip(" ,.-")
         numero = ""
         resto = ""
 
-    # Remove termos de apartamento/bloco do 'resto' para descobrir o bairro limpo (ex: 'ap 1203 centro' -> 'centro')
-    resto_sem_ap = re.sub(
+    # Remove 'ap 504', 'apto 1203', 'bloco B', etc.
+    resto_limpo = re.sub(
         r"\b(ap\.?|apto\.?|apartamento|bl\.?|bloco|casa|sl\.?|sala|lj\.?|loja)\s*\d*[a-zA-Z]?\b",
         " ",
         resto,
         flags=re.IGNORECASE
     )
-    # Remove nome da cidade do resto_sem_ap caso esteja escrito lá
-    for cid in CIDADES_RMBH:
-        resto_sem_ap = re.sub(rf"\b{cid}\b", " ", resto_sem_ap, flags=re.IGNORECASE)
-        resto_sem_ap = re.sub(rf"\b{MAPA_NOMES_CIDADES[cid]}\b", " ", resto_sem_ap, flags=re.IGNORECASE)
-    # Remove CEP caso esteja no resto
-    resto_sem_ap = re.sub(r"\b\d{5}-?\d{3}\b", " ", resto_sem_ap)
-    resto_sem_ap = re.sub(r"\s+", " ", resto_sem_ap).strip(" ,.-/")
+    # Remove a palavra 'Bairro :' ou 'Bairro' do resto para sobrar apenas o nome puro do bairro
+    resto_limpo = re.sub(r"\bbairro\s*[:\-]?\s*", " ", resto_limpo, flags=re.IGNORECASE)
 
-    if bairro_antes_da_rua and resto_sem_ap:
-        bairro_dica = f"{bairro_antes_da_rua}, {resto_sem_ap}"
+    for cid in CIDADES_RMBH:
+        resto_limpo = re.sub(rf"\b{cid}\b", " ", resto_limpo, flags=re.IGNORECASE)
+        resto_limpo = re.sub(rf"\b{MAPA_NOMES_CIDADES[cid]}\b", " ", resto_limpo, flags=re.IGNORECASE)
+
+    resto_limpo = re.sub(r"\b\d{5}-?\d{3}\b", " ", resto_limpo)
+    resto_limpo = re.sub(r"\s+", " ", resto_limpo).strip(" ,.-/ :")
+
+    if bairro_antes_da_rua and resto_limpo:
+        bairro_dica = f"{bairro_antes_da_rua}, {resto_limpo}"
     elif bairro_antes_da_rua:
         bairro_dica = bairro_antes_da_rua
     else:
-        bairro_dica = resto_sem_ap
+        bairro_dica = resto_limpo
 
     return rua, numero, bairro_dica, cidade_detectada
 
@@ -523,7 +565,6 @@ def geocodificar_endereco_rua(endereco_completo_texto: str):
 
 
 def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> bool:
-    """Verifica se o número do imóvel cabe na faixa do CEP (ex: 'de 501/502 a 999/1000', 'até 499')."""
     if not numero_str or not complemento_viacep:
         return True
     try:
@@ -532,16 +573,13 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
         return True
 
     comp = remover_acentos(complemento_viacep.lower())
-    # Ex: 'de 500 a 999'
     m_de_a = re.search(r"de\s+(\d+)(?:/\d+)?\s+a\s+(\d+)(?:/\d+)?", comp)
     if m_de_a:
         ini, fim = int(m_de_a.group(1)), int(m_de_a.group(2))
         return ini <= num <= fim
-    # Ex: 'ate 499'
     m_ate = re.search(r"ate\s+(\d+)", comp)
     if m_ate:
         return num <= int(m_ate.group(1))
-    # Ex: 'de 1000 ao fim'
     m_fim = re.search(r"de\s+(\d+)(?:/\d+)?\s+ao\s+fim", comp)
     if m_fim:
         return num >= int(m_fim.group(1))
@@ -550,10 +588,6 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def buscar_endereco_completo(endereco_bruto: str):
-    """
-    Busca o endereço completo e detecta se existem 2 ou mais bairros possíveis para aquela mesma rua/número.
-    Retorna: (endereco_padronizado, status, lat, lon, lista_opcoes_ambiguidade)
-    """
     if not str(endereco_bruto).strip():
         return "", "❌ NÃO ENCONTRADO - CORRIGIR", None, None, []
 
@@ -580,7 +614,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             if resp.status_code == 200:
                 dados = resp.json()
                 if isinstance(dados, list) and len(dados) > 0:
-                    # Filtra candidatos cuja faixa numérica aceita o número do pedido
                     candidatos_faixa = [
                         d for d in dados
                         if d.get("bairro") and numero_cabe_na_faixa_viacep(numero, d.get("complemento", ""))
@@ -588,7 +621,6 @@ def buscar_endereco_completo(endereco_bruto: str):
                     if not candidatos_faixa:
                         candidatos_faixa = [d for d in dados if d.get("bairro")]
 
-                    # Se o usuário informou bairro no pedido, tenta casar com o bairro do ViaCEP
                     bateu_bairro_dica = []
                     if bairro_dica:
                         dica_norm = remover_acentos(bairro_dica.lower())
@@ -602,7 +634,6 @@ def buscar_endereco_completo(endereco_bruto: str):
                     else:
                         escolhido = candidatos_faixa[0] if candidatos_faixa else dados[0]
 
-                        # Agrupa bairros distintos para verificar se há ambiguidade (2+ bairros para a mesma rua/número)
                         mapa_bairros_unicos = {}
                         for item in candidatos_faixa:
                             b_nome = item.get("bairro", "").strip()
@@ -665,7 +696,7 @@ def buscar_endereco_completo(endereco_bruto: str):
     except Exception:
         pass
 
-    # 3. Se achou CEP pelo geocoder (ex: rua escrita com erro de digitação como 'brandoa'), busca nome oficial no ViaCEP
+    # 3. Se achou CEP pelo geocoder, busca nome oficial no ViaCEP
     if cep_encontrado and not opcoes_bairros:
         cep_digitos = re.sub(r"\D", "", cep_encontrado)
         if len(cep_digitos) == 8:
@@ -681,7 +712,7 @@ def buscar_endereco_completo(endereco_bruto: str):
             except Exception:
                 pass
 
-    # 4. Segunda tentativa ViaCEP caso a cidade detectada pelo geocoder seja outra da RMBH (ex: Betim/Contagem/Sabará)
+    # 4. Segunda tentativa ViaCEP caso a cidade seja outra da RMBH
     if not cep_encontrado and cidade_oficial and len(rua_sem_prefixo) >= 3:
         try:
             url_viacep2 = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade_oficial))}/{quote(remover_acentos(rua_sem_prefixo))}/json/"
@@ -789,10 +820,6 @@ def validar_e_geocodificar_partida(texto_partida: str):
 
 
 def processar_bloco_unico_pedido(linhas_bloco: list, locais_dict: dict, vendedor_padrao: str = ""):
-    """
-    Processa as linhas de um único pedido (independente se o endereço veio no final
-    ou no meio antes dos produtos, como no caso do 'Pedido Raul Gaara').
-    """
     nome_cliente = None
     itens_pedido = []
     linhas_endereco = []
@@ -841,13 +868,7 @@ def processar_bloco_unico_pedido(linhas_bloco: list, locais_dict: dict, vendedor
 
 
 def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
-    """
-    Suporta tanto colagem direta do Telegram/WhatsApp (com '[14/10/2026 13:53] Nome:')
-    quanto colagem normal de vários pedidos sem data/hora.
-    """
     linhas_originais = texto_bruto.splitlines()
-
-    # Verifica se o texto colado possui cabeçalhos de mensagens do Telegram/WhatsApp
     tem_cabecalho_chat = any(REGEX_CABECALHO_CHAT.match(l) for l in linhas_originais if l.strip())
 
     pedidos = []
@@ -905,14 +926,11 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
             continue
 
         if ja_tem_endereco_no_bloco:
-            # Se a linha seguinte ao endereço ainda for um produto (ex: '10g uva' no caso do Raul Gaara),
-            # verifica se a linha depois dela NÃO é outro endereço (ou seja, é produto solto no fim do pedido atual)
             if eh_linha_produto_clara(linha, locais_dict):
                 bloco_atual.append(linha)
                 i += 1
                 continue
             else:
-                # Começou o nome do próximo cliente! Fecha o bloco anterior
                 blocos.append(bloco_atual)
                 bloco_atual = [linha]
                 ja_tem_endereco_no_bloco = False
@@ -934,7 +952,6 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
 
 
 def chave_duplicidade(cliente: str, endereco: str) -> tuple:
-    """Cria uma chave normalizada (Cliente + Rua/Número) para impedir pedidos duplicados."""
     cli_norm = remover_acentos(str(cliente).lower()).strip()
     rua, num, _, _ = separar_componentes_endereco(str(endereco))
     rua_norm = re.sub(
@@ -947,10 +964,6 @@ def chave_duplicidade(cliente: str, endereco: str) -> tuple:
 
 
 def adicionar_pedidos_na_sessao(df_novos: pd.DataFrame):
-    """
-    Adiciona novos pedidos bloqueando duplicatas (mesmo nome e endereço) e
-    retorna (qtd_adicionados, lista_duplicados_ignorados).
-    """
     if df_novos.empty:
         return 0, []
 
@@ -1453,7 +1466,6 @@ if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True
     else:
         st.warning("Cole pelo menos um pedido antes de clicar em adicionar.")
 
-# Exibe aviso de pedidos duplicados ignorados, se houver
 if st.session_state.get("avisos_duplicados"):
     dups_str = "\n".join([f"- **{d}**" for d in st.session_state["avisos_duplicados"]])
     st.warning(
@@ -1475,7 +1487,6 @@ if not st.session_state["df_pedidos"].empty:
     if "Opcoes_Endereco" not in df_atual.columns:
         df_atual["Opcoes_Endereco"] = "[]"
 
-    # Verifica se há endereços com mais de um bairro encontrado para o usuário escolher
     linhas_ambiguas = []
     for idx_amb, row_amb in df_atual.iterrows():
         try:
@@ -1598,7 +1609,6 @@ if not st.session_state["df_pedidos"].empty:
             st.session_state["avisos_duplicados"] = []
             st.rerun()
 
-    # Prévia dos nomes e endereços restaurada no Passo 2
     with st.expander("👀 Ver prévia dos pedidos (Nomes e Endereços)", expanded=True):
         linhas_previa = []
         for _, row in df_editado.iterrows():
