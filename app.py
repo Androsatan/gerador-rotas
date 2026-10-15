@@ -109,7 +109,7 @@ REGEX_CABECALHO_CHAT = re.compile(
 # ================= FUNÇÕES DE CONFIGURAÇÃO (SALVAR PRODUTOS) =================
 def carregar_config():
     padrao = {
-        "ponto_partida": "Bairro Maria Goretti, Belo Horizonte, MG",
+        "ponto_partida": "Maria Goretti, Belo Horizonte, MG",
         "local_1": "skunk, orange, amnesia, silver, wolf, super sheep, og kush, indoor, zowahh",
         "local_2": "ice, pak, dry, pod, colombia gold, uva",
         "local_3": "@, md, lsd, pacote gd",
@@ -1442,8 +1442,7 @@ texto_pedidos = st.text_area(
     height=200,
     key=f"texto_pedidos_{st.session_state['contador_form']}",
     placeholder=(
-        "Exemplo:\n[14/10/2026 13:53] 2K: Kaique inacio\n25 g Gold\nGranja de Freitas rua São Vicente 530\n\n"
-        "Leticia Guedes\nPacote 1;\n10g skunk wolf\nAv silviano brandoa 228 floresta"
+        "Exemplo:\n[14/10/2026 13:53]: Fulano\n25g castanha\nRua São Vicente 250\n\n"
     )
 )
 vendedor_lote = st.text_input(
