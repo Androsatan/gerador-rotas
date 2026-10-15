@@ -73,6 +73,9 @@ STOPWORDS_PRODUTOS = {"de", "do", "da", "dos", "das", "com", "sem", "e", "ou", "
 
 CORES_ROTAS = ["#e63946", "#2a9d8f", "#3a86ff", "#ff9f1c"]
 
+# Coordenada exata do Bairro Maria Goretti (Região Nordeste de BH, ao lado do Santa Cruz)
+COORD_MARIA_GORETTI = (-19.8783, -43.9268)
+
 
 # ================= FUNÇÕES DE CONFIGURAÇÃO (SALVAR PRODUTOS) =================
 def carregar_config():
@@ -233,12 +236,42 @@ def separar_componentes_endereco(endereco_bruto: str):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def geocodificar_ponto(endereco_texto: str):
-    """Obtém (lat, lon) de qualquer endereço ou ponto de partida em BH/RMBH."""
+    """
+    Obtém (lat, lon) com precisão em BH e Região Metropolitana.
+    Reconhece bairros de BH (como Maria Goretti) sem confundir com ruas homônimas.
+    """
+    texto_norm = remover_acentos(str(endereco_texto).lower().strip())
+
+    # 1. Caso seja o Bairro Maria Goretti (sem rua específica informada)
+    if "maria goretti" in texto_norm and not re.search(r"\b\d+\b", texto_norm):
+        return COORD_MARIA_GORETTI
+
+    # Remove a palavra "bairro" solta para não confundir geocodificadores em inglês
+    texto_limpo_busca = re.sub(r"\bbairro\b", "", str(endereco_texto), flags=re.IGNORECASE).strip(" ,-")
+
+    # 2. Tenta primeiro no Nominatim (OpenStreetMap Brasil - excelente para bairros e ruas de BH)
     try:
-        query_geo = f"{endereco_texto}, Minas Gerais, Brasil"
+        q_nom = f"{texto_limpo_busca}, Minas Gerais, Brasil"
+        url_nom = (
+            f"https://nominatim.openstreetmap.org/search"
+            f"?q={quote(q_nom)}&format=json&limit=1&countrycodes=br"
+            f"&viewbox=-44.35,-19.60,-43.65,-20.20&bounded=1"
+        )
+        headers = {"User-Agent": "GeradorRotasBH/1.0"}
+        resp_nom = requests.get(url_nom, headers=headers, timeout=5)
+        if resp_nom.status_code == 200:
+            dados_nom = resp_nom.json()
+            if isinstance(dados_nom, list) and len(dados_nom) > 0:
+                return float(dados_nom[0]["lat"]), float(dados_nom[0]["lon"])
+    except Exception:
+        pass
+
+    # 3. Fallback: ArcGIS restrito à área de BH / Região Metropolitana
+    try:
+        query_geo = f"{texto_limpo_busca}, Minas Gerais, Brasil"
         url_arcgis = (
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
-            f"?SingleLine={quote(query_geo)}&maxLocations=1&f=json"
+            f"?SingleLine={quote(query_geo)}&searchExtent=-44.35,-20.20,-43.65,-19.60&maxLocations=1&f=json"
         )
         resp = requests.get(url_arcgis, timeout=5)
         if resp.status_code == 200:
@@ -247,8 +280,8 @@ def geocodificar_ponto(endereco_texto: str):
                 return float(cands[0]["location"]["y"]), float(cands[0]["location"]["x"])
     except Exception:
         pass
-    # Coordenada padrão (Bairro Maria Goretti / Região Nordeste BH) caso falhe a rede
-    return -19.8825, -43.9165
+
+    return COORD_MARIA_GORETTI
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -256,7 +289,6 @@ def buscar_endereco_completo(endereco_bruto: str):
     if not str(endereco_bruto).strip():
         return "", "❌ NÃO ENCONTRADO - CORRIGIR", None, None
 
-    # Caso já esteja no formato completo com CEP (ex: rebusca após edição), preserva dados
     rua, numero, bairro_dica, cidade = separar_componentes_endereco(str(endereco_bruto))
     rua_sem_prefixo = re.sub(
         r"^(rua|r\.|r|avenida|av\.|av|alameda|al\.|praca|praça|travessa|beco)\s+",
@@ -294,12 +326,15 @@ def buscar_endereco_completo(endereco_bruto: str):
         except Exception:
             pass
 
-    # 2. Consulta ArcGIS Geocoder
+    # 2. Consulta ArcGIS Geocoder usando o bairro oficial descoberto pelo ViaCEP para cravar o ponto certo
+    rua_busca = logradouro_oficial if logradouro_oficial else rua
+    bairro_busca = bairro_oficial if bairro_oficial else bairro_dica
     try:
-        query_geo = f"{rua}, {numero}, {bairro_dica}, {cidade}, Minas Gerais, Brasil"
+        query_geo = f"{rua_busca}, {numero}, {bairro_busca}, {cidade_oficial}, Minas Gerais, Brasil"
         url_arcgis = (
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
-            f"?SingleLine={quote(query_geo)}&outFields=StName,StType,AddNum,Nbrhd,City,Postal&maxLocations=1&f=json"
+            f"?SingleLine={quote(query_geo)}&searchExtent=-44.35,-20.20,-43.65,-19.60"
+            f"&outFields=StName,StType,AddNum,Nbrhd,City,Postal&maxLocations=1&f=json"
         )
         resp_geo = requests.get(url_arcgis, timeout=5)
         if resp_geo.status_code == 200:
@@ -353,7 +388,6 @@ def buscar_endereco_completo(endereco_bruto: str):
 
     endereco_padronizado = ", ".join(partes_end)
 
-    # Se achou no ViaCEP mas faltou coordenada no primeiro passe, geocodifica o endereço padronizado
     if lat is None or lon is None:
         lat, lon = geocodificar_ponto(endereco_padronizado)
 
@@ -440,7 +474,6 @@ def montar_linha_cliente(row) -> str:
 
 # ================= MOTOR MATEMÁTICO DE DIVISÃO E OTIMIZAÇÃO DE ROTAS =================
 def distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calcula a distância em km entre duas coordenadas."""
     r = 6371.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp = math.radians(lat2 - lat1)
@@ -450,17 +483,11 @@ def distancia_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def dividir_pedidos_por_cota(df: pd.DataFrame, nomes_rotas: list, cotas_rotas: list, lat_saida: float, lon_saida: float) -> list:
-    """
-    Agrupa os pedidos geograficamente respeitando EXATAMENTE o número de pedidos (cotas)
-    definido pelo usuário para cada rota. Se faltar pedido em uma região, puxa o pedido
-    mais próximo da região vizinha.
-    """
     n = len(df)
     k = len(nomes_rotas)
     if k <= 1 or n <= 1:
         return [nomes_rotas[0]] * n
 
-    # Coordenadas válidas para todos os pontos
     coords = []
     for _, row in df.iterrows():
         lat = row.get("Lat")
@@ -469,7 +496,6 @@ def dividir_pedidos_por_cota(df: pd.DataFrame, nomes_rotas: list, cotas_rotas: l
             lat, lon = geocodificar_ponto(str(row.get("Endereco", "")))
         coords.append((float(lat), float(lon)))
 
-    # 1. Inicializa os centros das K rotas espalhados por ângulo ao redor do Ponto de Partida
     angulos = []
     for idx, (lat, lon) in enumerate(coords):
         ang = math.atan2(lat - lat_saida, lon - lon_saida)
@@ -482,11 +508,9 @@ def dividir_pedidos_por_cota(df: pd.DataFrame, nomes_rotas: list, cotas_rotas: l
         pos_escolhida = min(max(0, pos_escolhida), n - 1)
         centros.append(coords[angulos[pos_escolhida][1]])
 
-    # 2. Alocação inicial respeitando as cotas exatas de cada rota
     atribuicao = [-1] * n
     vagas = list(cotas_rotas)
 
-    # Prioriza pontos que estão muito longe das outras rotas (maior diferença entre 1ª e 2ª rota mais próxima)
     ordem_prioridade = []
     for i, (lat, lon) in enumerate(coords):
         dists = sorted([distancia_km(lat, lon, c[0], c[1]) for c in centros])
@@ -503,10 +527,7 @@ def dividir_pedidos_por_cota(df: pd.DataFrame, nomes_rotas: list, cotas_rotas: l
         atribuicao[idx_ponto] = rota_escolhida
         vagas[rota_escolhida] -= 1
 
-    # 3. Refinamento por Troca (Swap Optimization): troca pedidos entre rotas na fronteira
-    # sempre que isso deixar as regiões mais compactas, mantendo a quantidade exata de pedidos!
     for _ in range(40):
-        # Recalcula o centro geográfico de cada rota
         novos_centros = []
         for r in range(k):
             pts_r = [coords[i] for i in range(n) if atribuicao[i] == r]
@@ -538,15 +559,10 @@ def dividir_pedidos_por_cota(df: pd.DataFrame, nomes_rotas: list, cotas_rotas: l
         if not melhorou:
             break
 
-    # Ordena o índice das rotas pela proximidade média ao ponto de partida para ficar consistente
     return [nomes_rotas[r] for r in atribuicao]
 
 
 def obter_matriz_osrm(pontos_lat_lon: list):
-    """
-    Consulta o servidor gratuito OSRM para obter a matriz real de tempo/distância de rua
-    entre o Ponto de Partida (índice 0) e todos os clientes da rota.
-    """
     m = len(pontos_lat_lon)
     try:
         coords_str = ";".join([f"{lon:.6f},{lat:.6f}" for lat, lon in pontos_lat_lon])
@@ -561,7 +577,6 @@ def obter_matriz_osrm(pontos_lat_lon: list):
     except Exception:
         pass
 
-    # Fallback: distância de rua estimada caso o servidor OSRM oscile
     matriz_dist = [[0.0] * m for _ in range(m)]
     for i in range(m):
         for j in range(m):
@@ -575,10 +590,6 @@ def obter_matriz_osrm(pontos_lat_lon: list):
 
 
 def otimizar_sequencia_grupo(indices_grupo: list, nodo_anterior: int, matriz_custo: list) -> list:
-    """
-    Encontra a melhor sequência rua a rua para um grupo de paradas partindo de `nodo_anterior`,
-    usando Vizinho Mais Próximo + Refinamento 2-Opt.
-    """
     if len(indices_grupo) <= 1:
         return list(indices_grupo)
 
@@ -592,7 +603,6 @@ def otimizar_sequencia_grupo(indices_grupo: list, nodo_anterior: int, matriz_cus
         restantes.remove(prox)
         atual = prox
 
-    # Refinamento 2-Opt para eliminar cruzamentos de ruas
     melhorou = True
     n_r = len(rota)
     while melhorou:
@@ -615,17 +625,11 @@ def otimizar_sequencia_grupo(indices_grupo: list, nodo_anterior: int, matriz_cus
 
 
 def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: float):
-    """
-    Calcula a melhor ordem de entrega para os pedidos de uma rota partindo do Ponto de Partida,
-    respeitando quem está marcado como PRIMEIRO e quem está marcado como ÚLTIMO.
-    Retorna: (df_rota_ordenado, km_total)
-    """
     if df_rota.empty:
         return df_rota, 0.0
 
     df_trab = df_rota.copy().reset_index(drop=True)
 
-    # Ponto 0 é o Ponto de Partida; Pontos 1..M são os clientes
     pontos = [(lat_saida, lon_saida)]
     for idx, row in df_trab.iterrows():
         lat, lon = row.get("Lat"), row.get("Lon")
@@ -637,7 +641,6 @@ def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: floa
 
     matriz_tempo, matriz_metros = obter_matriz_osrm(pontos)
 
-    # Separa índices (1..M) em PRIMEIRO, Normal e ÚLTIMO
     primeiros = []
     normais = []
     ultimos = []
@@ -653,7 +656,7 @@ def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: floa
             normais.append(nodo_osrm)
 
     sequencia_final = []
-    nodo_atual = 0  # Começa no Ponto de Partida
+    nodo_atual = 0
 
     if primeiros:
         seq_p = otimizar_sequencia_grupo(primeiros, nodo_atual, matriz_tempo)
@@ -662,7 +665,6 @@ def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: floa
 
     if normais:
         seq_n = otimizar_sequencia_grupo(normais, nodo_atual, matriz_tempo)
-        # Se houver cliente fixado como ÚLTIMO, verifica se algum ajuste 2-opt melhora a chegada no ÚLTIMO
         if ultimos and len(seq_n) >= 2:
             alvo_final = ultimos[0]
             melhorou = True
@@ -690,7 +692,6 @@ def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: floa
         seq_u = otimizar_sequencia_grupo(ultimos, nodo_atual, matriz_tempo)
         sequencia_final.extend(seq_u)
 
-    # Calcula quilometragem total da rota
     metros_totais = 0.0
     ant = 0
     for nodo in sequencia_final:
@@ -706,7 +707,6 @@ def otimizar_rota_unica(df_rota: pd.DataFrame, lat_saida: float, lon_saida: floa
 
 
 def recalcular_todas_as_rotas(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: list, endereco_partida: str):
-    """Recalcula a melhor sequência rua a rua para todas as rotas ativas."""
     lat_s, lon_s = geocodificar_ponto(endereco_partida)
     dfs_otimizados = []
     resumo_km = {}
@@ -738,12 +738,10 @@ def formatar_titulo_rota(nome: str) -> str:
 
 
 def renderizar_mapa_rotas(df_rotas: pd.DataFrame, nomes_rotas: list, coord_partida: tuple, end_partida: str):
-    """Gera um mapa interativo Leaflet com pinos numerados e linhas coloridas por rota."""
     lat_p, lon_p = coord_partida
     marcadores_js = []
     linhas_js = []
 
-    # Pino do Ponto de Partida
     end_p_safe = str(end_partida).replace("'", "").replace('"', "")
     marcadores_js.append(f"""
         L.marker([{lat_p}, {lon_p}], {{
@@ -827,7 +825,7 @@ if "resumo_km_rotas" not in st.session_state:
     st.session_state["resumo_km_rotas"] = {}
 
 if "coord_partida_atual" not in st.session_state:
-    st.session_state["coord_partida_atual"] = (-19.8825, -43.9165)
+    st.session_state["coord_partida_atual"] = COORD_MARIA_GORETTI
 
 if "contador_form" not in st.session_state:
     st.session_state["contador_form"] = 0
@@ -943,7 +941,6 @@ if not st.session_state["df_pedidos"].empty:
 
     df_editado["Cliente"] = df_editado["Cliente"].astype(str).str.upper()
 
-    # Se o usuário editou algum endereço na tabela, busca o novo CEP automaticamente
     endereco_mudou = False
     for idx in df_editado.index:
         if idx in df_atual.index and df_editado.at[idx, "Endereco"] != df_atual.at[idx, "Endereco"]:
@@ -1006,7 +1003,6 @@ if not st.session_state["df_pedidos"].empty:
         horizontal=True
     )
 
-    # Sugestão inicial equilibrada da quantidade de pedidos para cada rota
     base_por_rota = total_pedidos // qtd_rotas
     sobra = total_pedidos % qtd_rotas
     sugestoes_padrao = [base_por_rota + (1 if i < sobra else 0) for i in range(qtd_rotas)]
@@ -1047,7 +1043,6 @@ if not st.session_state["df_pedidos"].empty:
             lat_s, lon_s = geocodificar_ponto(ponto_partida)
             df_para_dividir = df_editado.copy().reset_index(drop=True)
 
-            # Garante nomes únicos para as rotas
             nomes_unicos = []
             for idx_n, nm in enumerate(nomes_escolhidos):
                 if nm in nomes_unicos:
@@ -1116,7 +1111,6 @@ if not st.session_state["df_rotas_calculadas"].empty:
         }
     )
 
-    # Detecta se o usuário trocou algum pedido de rota ou alterou PRIMEIRO/ÚLTIMO e re-otimiza na hora
     mudou_rota_ou_pos = (
         not df_rotas_edit["Rota"].equals(df_rotas["Rota"]) or
         not df_rotas_edit["Posicao"].equals(df_rotas["Posicao"])
@@ -1137,7 +1131,6 @@ if not st.session_state["df_rotas_calculadas"].empty:
         df_rotas_edit["Cliente"] = df_rotas_edit["Cliente"].astype(str).str.upper()
         st.session_state["df_rotas_calculadas"] = df_rotas_edit
 
-    # Mapa Visual Interativo
     with st.expander("🗺️ Ver Mapa das Rotas (Pinos Numerados por Ordem de Entrega)", expanded=True):
         renderizar_mapa_rotas(
             st.session_state["df_rotas_calculadas"],
@@ -1146,7 +1139,6 @@ if not st.session_state["df_rotas_calculadas"].empty:
             ponto_partida
         )
 
-    # Blocos de Texto Prontos para Copiar (Idênticos aos prints)
     st.markdown("### 📋 Textos Prontos para Copiar (WhatsApp / Telegram)")
     st.caption("Clique no ícone de copiar no canto superior direito de cada caixa preta abaixo:")
 
