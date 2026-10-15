@@ -276,7 +276,7 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
             for item in resultados:
                 cat = item.get("category", "")
                 tipo = item.get("type", "")
-                 end_det = item.get("address", {})
+                end_det = item.get("address", {})
 
                 # Bloqueia ruas, avenidas ou estabelecimentos comerciais
                 if cat in ("highway", "amenity", "shop", "tourism", "building"):
@@ -558,7 +558,6 @@ def validar_e_geocodificar_partida(texto_partida: str):
 
     # Caso 3: É apenas um BAIRRO (ex: 'Bairro Maria Goretti, Belo Horizonte, MG' ou 'Santa Cruz')
     cidade_alvo = detectar_cidade_rmbh(bruto)
-    # Limpa a palavra 'bairro', a cidade e a sigla 'MG' para isolar o nome puro do bairro
     nome_bairro = re.sub(r"\bbairro\b", "", bruto, flags=re.IGNORECASE)
     for cid in CIDADES_RMBH:
         nome_bairro = re.sub(rf"\b{cid}\b", "", nome_bairro, flags=re.IGNORECASE)
