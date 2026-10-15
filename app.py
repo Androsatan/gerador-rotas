@@ -513,7 +513,7 @@ if not st.session_state["df_pedidos"].empty:
             st.session_state["df_pedidos"] = pd.DataFrame()
             st.rerun()
 
-    with st.expander("👀 Ver prévia de como os pedidos vão sair no texto final", expanded=True):
+    with st.expander("👀 Ver prévia ddos pedidos", expanded=True):
         linhas_previa = []
         for _, row in df_editado.iterrows():
             linhas_previa.append(f"{row['Endereco']}\n{montar_linha_cliente(row)}")
