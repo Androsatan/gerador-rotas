@@ -1438,7 +1438,7 @@ if (
 st.subheader("1️⃣ Adicionar Pedidos")
 
 texto_pedidos = st.text_area(
-    "Cole os pedidos abaixo (aceita mensagens copiadas direto do Telegram/WhatsApp com data e hora):",
+    "Cole os pedidos abaixo:",
     height=200,
     key=f"texto_pedidos_{st.session_state['contador_form']}",
     placeholder=(
@@ -1453,7 +1453,7 @@ vendedor_lote = st.text_input(
 
 if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True):
     if texto_pedidos.strip():
-        with st.spinner("Extraindo pedidos, filtrando mensagens do Telegram e buscando CEPs..."):
+        with st.spinner("Extraindo pedidos, filtrando mensagens e buscando CEPs..."):
             df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
             if not df_extraidos.empty:
                 qtd_add, lista_dups = adicionar_pedidos_na_sessao(df_extraidos)
