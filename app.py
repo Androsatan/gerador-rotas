@@ -9,14 +9,20 @@ import math
 import unicodedata
 from difflib import SequenceMatcher
 from urllib.parse import quote
+from io import BytesIO
+from pypdf import PdfReader, PdfWriter, PageObject
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import portrait
+from reportlab.lib.units import mm
 
-st.set_page_config(page_title="Gerador de Rotas", page_icon="🛵", layout="wide")
+st.set_page_config(page_title="Sistema de Rotas e Etiquetas", page_icon="🛵", layout="wide")
 
 # CSS reforçado: impede "..." dentro dos botões e empilha colunas em janelas reduzidas
 st.markdown("""
 <style>
 div.stButton > button,
-div.stFormSubmitButton > button {
+div.stFormSubmitButton > button,
+div.stDownloadButton > button {
     white-space: normal !important;
     word-wrap: break-word !important;
     overflow-wrap: break-word !important;
@@ -26,7 +32,8 @@ div.stFormSubmitButton > button {
 }
 
 div.stButton > button *,
-div.stFormSubmitButton > button * {
+div.stFormSubmitButton > button *,
+div.stDownloadButton > button * {
     white-space: normal !important;
     word-wrap: break-word !important;
     overflow-wrap: break-word !important;
@@ -60,7 +67,7 @@ if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
 
 if not st.session_state["autenticado"]:
-    st.title("🔒 Acesso Restrito - Gerador de Rotas")
+    st.title("🔒 Acesso Restrito - Rotas & Etiquetas")
     st.markdown("Digite a senha de acesso para entrar no sistema.")
 
     with st.form("form_login"):
@@ -77,7 +84,9 @@ if not st.session_state["autenticado"]:
     st.stop()
 
 
+# ================= CONSTANTES E MAPAS =================
 ARQUIVO_CONFIG = "config_rotas.json"
+NOMES_ARQUIVO_MODELO = ["Etiqueta.pdf", "etiqueta.pdf", "Modelo Etiqueta.pdf", "modelo_etiqueta.pdf"]
 
 CIDADES_RMBH = [
     "belo horizonte", "sabara", "nova lima", "contagem", "betim",
@@ -108,7 +117,6 @@ MAPA_NOMES_CIDADES = {
     "raposos": "Raposos"
 }
 
-# Bairros clássicos da RMBH que frequentemente vêm sem o nome da cidade no pedido
 MAPA_BAIRROS_RMBH = {
     "vila da serra": "Nova Lima",
     "vale do sereno": "Nova Lima",
@@ -263,10 +271,6 @@ def tokens_nucleo_rua(nome_rua: str) -> list:
 
 
 def similaridade_ruas(rua_digitada: str, rua_candidata: str) -> float:
-    """
-    Calcula o grau de semelhança real entre a rua digitada pelo usuário e a rua retornada pela API.
-    Impede que uma rua como 'Gonzalez pecocthe' seja trocada por 'Rua São João da Serra'.
-    """
     t_dig = tokens_nucleo_rua(rua_digitada)
     t_cand = tokens_nucleo_rua(rua_candidata)
     if not t_dig or not t_cand:
@@ -304,7 +308,6 @@ def similaridade_bairros(bairro_dica: str, bairro_candidato: str) -> float:
 
 
 def nome_bairro_partida_bate(bairro_buscado: str, bairro_retornado: str) -> bool:
-    """Garante que o Ponto de Partida não aceite 'Maria Teresa' quando buscamos 'Maria Goretti'."""
     b_alvo = remover_acentos(bairro_buscado.lower()).strip()
     b_ret = remover_acentos(bairro_retornado.lower()).strip()
     if not b_alvo or not b_ret:
@@ -571,7 +574,6 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
         lat_fixo, lon_fixo, desc_fixa = COORDENADAS_BAIRROS_FIXOS[bairro_alvo_norm]
         return True, desc_fixa, lat_fixo, lon_fixo
 
-    # 1. Nominatim com validação estrita do nome do bairro
     try:
         q_nom = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_nom = (
@@ -613,7 +615,6 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     except Exception:
         pass
 
-    # 2. Photon com validação estrita do nome do bairro
     try:
         q_photon = f"{nome_bairro_limpo} {cidade} Minas Gerais"
         url_photon = f"https://photon.komoot.io/api/?q={quote(q_photon)}&lat=-19.9167&lon=-43.9345&limit=12"
@@ -640,7 +641,6 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     except Exception:
         pass
 
-    # 3. ArcGIS com validação estrita do nome do bairro
     try:
         q_arc = f"Bairro {nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
         url_arc = (
@@ -727,11 +727,6 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
 
 
 def consultar_viacep_com_tolerancia(rua_original: str, rua_sem_prefixo: str, cidade: str) -> list:
-    """
-    Consulta o ViaCEP pelo nome da rua. Se não achar devido a erro de digitação em uma das palavras
-    (ex: 'Gonzalez pecocthe' em vez de 'Gonzalez Pecotche'), busca pelas palavras-chave da rua
-    e filtra apenas logradouros que tenham alta similaridade real com a rua digitada.
-    """
     termos_tentativa = [rua_sem_prefixo]
     tokens = tokens_nucleo_rua(rua_sem_prefixo)
     for tk in tokens:
@@ -784,7 +779,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             if cid_extra not in cidades_para_testar:
                 cidades_para_testar.append(cid_extra)
 
-    # 1. Consulta ViaCEP (com tolerância a erro de digitação e validação estrita de nome de rua)
     if len(rua_sem_prefixo) >= 3:
         for cid_teste in cidades_para_testar:
             dados_viacep = consultar_viacep_com_tolerancia(rua, rua_sem_prefixo, cid_teste)
@@ -844,7 +838,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             cep_encontrado = escolhido.get("cep", "")
             break
 
-    # 2. Consulta ArcGIS Geocoder (APENAS aceita nome de rua/CEP se passar no filtro similaridade_ruas >= 0.72)
     rua_busca = logradouro_oficial if logradouro_oficial else rua
     bairro_busca = bairro_oficial if bairro_oficial else bairro_dica
     try:
@@ -893,7 +886,6 @@ def buscar_endereco_completo(endereco_bruto: str):
     except Exception:
         pass
 
-    # 3. Se achou CEP pelo geocoder, busca no ViaCEP MAS valida se a rua do CEP é realmente a rua do cliente!
     if cep_encontrado and not opcoes_bairros:
         cep_digitos = re.sub(r"\D", "", cep_encontrado)
         if len(cep_digitos) == 8:
@@ -913,7 +905,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             except Exception:
                 pass
 
-    # 4. Se ainda não confirmou a rua, tenta Photon (OpenStreetMap) com validação de similaridade_ruas
     if not logradouro_oficial:
         try:
             q_ph = f"{rua} {numero} {bairro_dica} {cidade_oficial} MG"
@@ -1180,7 +1171,6 @@ def chave_duplicidade(cliente: str, endereco: str) -> tuple:
 
 
 def atualizar_base_pedidos(novo_df: pd.DataFrame):
-    """Atualiza o DataFrame base e incrementa a chave do editor para sincronizar sem travar edições."""
     df_limpo = novo_df.reset_index(drop=True).copy()
     st.session_state["df_pedidos"] = df_limpo
     st.session_state["df_pedidos_editados"] = df_limpo.copy()
@@ -1577,8 +1567,211 @@ def renderizar_mapa_rotas(df_rotas: pd.DataFrame, nomes_rotas: list, coord_parti
     components.html(html_mapa, height=430)
 
 
-# ================= INICIALIZAÇÃO =================
+# ================= FUNÇÕES DO GERADOR DE ETIQUETAS (10x15cm) =================
+def localizar_modelo_pdf_no_repositorio():
+    """Busca automaticamente o arquivo Etiqueta.pdf na mesma pasta do repositório GitHub."""
+    pasta_base = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else "."
+    for nome_arq in NOMES_ARQUIVO_MODELO:
+        caminho_tentativa = os.path.join(pasta_base, nome_arq)
+        if os.path.exists(caminho_tentativa):
+            return caminho_tentativa
+        if os.path.exists(nome_arq):
+            return nome_arq
+    return None
+
+
+def limpar_nome_para_etiqueta(nome_bruto: str) -> str:
+    """Remove colchetes de vendedor [2T] para a etiqueta impressa, mantendo o nome limpo."""
+    sem_vendedor = re.sub(r"\[.*?\]", "", str(nome_bruto))
+    sem_espacos_duplos = re.sub(r"\s+", " ", sem_vendedor).strip()
+    return sem_espacos_duplos.upper()
+
+
+def formatar_endereco_para_etiqueta(endereco_bruto: str) -> str:
+    """
+    Remove apenas CEPs que estejam intercalados no formato antigo do Circuit ('Rua X, 10, 30000-000 - Bairro')
+    sem nunca apagar o número da rua ou cortar o CEP no final do endereço do Gerador de Rotas.
+    """
+    end = str(endereco_bruto).strip()
+    end = re.sub(r",\s*\d{5}-?\d{3}\s*-\s*", " - ", end)
+    end = re.sub(r"\s+", " ", end).strip(" ,")
+    return end
+
+
+def atualizar_base_etiquetas(novo_df: pd.DataFrame):
+    df_limpo = novo_df.reset_index(drop=True).copy()
+    st.session_state["df_etiquetas"] = df_limpo
+    st.session_state["df_etiquetas_editadas"] = df_limpo.copy()
+    st.session_state["versao_editor_etiquetas"] = st.session_state.get("versao_editor_etiquetas", 0) + 1
+
+
+def extrair_etiquetas_de_texto_rota(texto_colado: str) -> pd.DataFrame:
+    """
+    Lê a lista de nomes e endereços exatamente como é gerada no Gerador de Rotas:
+    Exemplo:
+        ROTA FP
+
+        Rua Marrocos, 47, Vila Jardim Leblon, Belo Horizonte, 31575-230
+        AXEL [2T] (2PCT)
+    Também aceita a ordem inversa (Nome na linha de cima e Endereço na linha de baixo).
+    """
+    linhas = [l.strip() for l in texto_colado.splitlines()]
+    rota_atual = "GERAL"
+    registros = []
+    buffer_linhas = []
+
+    def processar_par(linhas_bloco, nome_rota):
+        if not linhas_bloco:
+            return
+        if len(linhas_bloco) == 1:
+            unica = linhas_bloco[0]
+            if eh_linha_endereco(unica):
+                registros.append({
+                    "Imprimir": True,
+                    "Rota": nome_rota,
+                    "Ordem": f"{len(registros) + 1}º",
+                    "Nome Etiqueta": "CLIENTE",
+                    "Endereco Etiqueta": formatar_endereco_para_etiqueta(unica),
+                    "Nome Original": "CLIENTE",
+                    "Endereco Original": unica
+                })
+            return
+
+        l1, l2 = linhas_bloco[0], linhas_bloco[1]
+        if eh_linha_endereco(l1) and not eh_linha_endereco(l2):
+            end_orig, nome_orig = l1, l2
+        elif eh_linha_endereco(l2) and not eh_linha_endereco(l1):
+            nome_orig, end_orig = l1, l2
+        else:
+            # Padrão do Gerador de Rotas: 1ª linha é Endereço, 2ª linha é Cliente
+            end_orig, nome_orig = l1, l2
+
+        registros.append({
+            "Imprimir": True,
+            "Rota": nome_rota,
+            "Ordem": f"{len(registros) + 1}º",
+            "Nome Etiqueta": limpar_nome_para_etiqueta(nome_orig),
+            "Endereco Etiqueta": formatar_endereco_para_etiqueta(end_orig),
+            "Nome Original": nome_orig.strip().upper(),
+            "Endereco Original": end_orig.strip()
+        })
+
+    for ln in linhas:
+        if not ln:
+            if buffer_linhas:
+                processar_par(buffer_linhas, rota_atual)
+                buffer_linhas = []
+            continue
+
+        # Identifica cabeçalho de rota (ex: "ROTA FP", "ROTA LE", "ROTA 1")
+        if re.match(r"^ROTA\b", ln, flags=re.IGNORECASE) and not eh_linha_endereco(ln):
+            if buffer_linhas:
+                processar_par(buffer_linhas, rota_atual)
+                buffer_linhas = []
+            rota_atual = ln.strip().upper()
+            continue
+
+        buffer_linhas.append(ln)
+        if len(buffer_linhas) == 2:
+            processar_par(buffer_linhas, rota_atual)
+            buffer_linhas = []
+
+    if buffer_linhas:
+        processar_par(buffer_linhas, rota_atual)
+
+    return pd.DataFrame(registros)
+
+
+def importar_etiquetas_das_rotas_calculadas(df_rotas: pd.DataFrame) -> pd.DataFrame:
+    """Converte o DataFrame das rotas calculadas no Passo 4 diretamente para o formato de Etiquetas."""
+    registros = []
+    for idx, row in df_rotas.iterrows():
+        nome_completo_rota = montar_linha_cliente(row)
+        end_completo = str(row.get("Endereco", "")).strip()
+        registros.append({
+            "Imprimir": True,
+            "Rota": str(row.get("Rota", "ROTA")).strip().upper(),
+            "Ordem": str(row.get("Ordem", f"{idx + 1}º")),
+            "Nome Etiqueta": limpar_nome_para_etiqueta(nome_completo_rota),
+            "Endereco Etiqueta": formatar_endereco_para_etiqueta(end_completo),
+            "Nome Original": nome_completo_rota,
+            "Endereco Original": end_completo
+        })
+    return pd.DataFrame(registros)
+
+
+def quebrar_endereco_duas_linhas(endereco: str, limite_chars: int = 50):
+    """Divide o endereço em até 2 linhas para caber perfeitamente na largura de 10cm da etiqueta."""
+    end = endereco.strip()
+    if "MG," in end:
+        partes = end.split("MG,", 1)
+        return partes[0].strip() + " MG", partes[1].strip()
+
+    if len(end) <= limite_chars:
+        return end, ""
+
+    # Tenta quebrar na vírgula mais próxima antes do limite
+    corte = end.rfind(",", 0, limite_chars)
+    if corte == -1:
+        corte = end.rfind(" ", 0, limite_chars)
+    if corte == -1:
+        return end[:limite_chars], end[limite_chars:].strip()
+
+    linha1 = end[:corte].strip(" ,")
+    linha2 = end[corte:].strip(" ,")
+    return linha1, linha2
+
+
+def gerar_pdf_etiquetas_10x15(df_selecionadas: pd.DataFrame, fonte_modelo_pdf) -> bytes:
+    """
+    Gera um único PDF no formato 10x15cm (100x150mm) mesclando cada etiqueta selecionada
+    sobre o arquivo modelo Etiqueta.pdf.
+    """
+    largura, altura = 100 * mm, 150 * mm
+    pdf_final_writer = PdfWriter()
+
+    for _, row in df_selecionadas.iterrows():
+        # Lê uma cópia limpa da página do modelo para cada etiqueta
+        modelo_reader = PdfReader(fonte_modelo_pdf)
+        modelo_pagina = modelo_reader.pages[0]
+
+        packet = BytesIO()
+        can = canvas.Canvas(packet, pagesize=portrait((largura, altura)))
+
+        # Nome do Destinatário
+        can.setFont("Helvetica-Bold", 9)
+        can.drawString(38 * mm, 200, str(row.get("Nome Etiqueta", "")).strip())
+
+        # Endereço do Destinatário (com quebra inteligente em 2 linhas se necessário)
+        can.setFont("Helvetica", 8)
+        end_str = str(row.get("Endereco Etiqueta", "")).strip()
+        linha_end_1, linha_end_2 = quebrar_endereco_duas_linhas(end_str, limite_chars=50)
+
+        if linha_end_2:
+            can.drawString(9 * mm, 184, linha_end_1)
+            can.drawString(9 * mm, 175, linha_end_2)
+        else:
+            can.drawString(9 * mm, 182, linha_end_1)
+
+        can.save()
+        packet.seek(0)
+
+        overlay = PdfReader(packet).pages[0]
+        saida_pag = PageObject.create_blank_page(width=largura, height=altura)
+        saida_pag.merge_page(modelo_pagina)
+        saida_pag.merge_page(overlay)
+        pdf_final_writer.add_page(saida_pag)
+
+    pdf_saida = BytesIO()
+    pdf_final_writer.write(pdf_saida)
+    return pdf_saida.getvalue()
+
+
+# ================= INICIALIZAÇÃO DE ESTADO =================
 config_salva = carregar_config()
+
+if "modulo_ativo" not in st.session_state:
+    st.session_state["modulo_ativo"] = "rotas"
 
 if "df_pedidos" not in st.session_state:
     st.session_state["df_pedidos"] = pd.DataFrame()
@@ -1613,9 +1806,20 @@ if "contador_form" not in st.session_state:
 if "avisos_duplicados" not in st.session_state:
     st.session_state["avisos_duplicados"] = []
 
-st.title("🛵 Gerador de Rotas")
+if "df_etiquetas" not in st.session_state:
+    st.session_state["df_etiquetas"] = pd.DataFrame()
 
-# --- BARRA LATERAL: CONFIGURAÇÕES E VALIDAÇÃO DE PARTIDA ---
+if "df_etiquetas_editadas" not in st.session_state:
+    st.session_state["df_etiquetas_editadas"] = pd.DataFrame()
+
+if "versao_editor_etiquetas" not in st.session_state:
+    st.session_state["versao_editor_etiquetas"] = 0
+
+if "contador_form_etiquetas" not in st.session_state:
+    st.session_state["contador_form_etiquetas"] = 0
+
+
+# ================= BARRA LATERAL (CONFIGURAÇÕES GERAIS) =================
 with st.sidebar:
     st.header("📍 Ponto de Partida")
     ponto_partida = st.text_input(
@@ -1661,392 +1865,599 @@ with st.sidebar:
         "Local 4": [p for p in local_4.split(",") if p.strip()],
     }
 
-if (
-    partida_ok
-    and not st.session_state["df_rotas_calculadas"].empty
-    and st.session_state["coord_partida_atual"] != (lat_partida, lon_partida)
-):
-    df_reotim, novo_km, nova_coord = recalcular_todas_as_rotas(
-        st.session_state.get("df_rotas_editadas", st.session_state["df_rotas_calculadas"]),
-        st.session_state["nomes_rotas_ativas"],
-        lat_partida,
-        lon_partida
-    )
-    st.session_state["df_rotas_calculadas"] = df_reotim
-    st.session_state["df_rotas_editadas"] = df_reotim.copy()
-    st.session_state["versao_editor_rotas"] += 1
-    st.session_state["resumo_km_rotas"] = novo_km
-    st.session_state["coord_partida_atual"] = nova_coord
 
-# --- PASSO 1: ADICIONAR PEDIDOS ---
-st.subheader("1️⃣ Adicionar Pedidos")
-
-texto_pedidos = st.text_area(
-    "Cole os pedidos abaixo:",
-    height=200,
-    key=f"texto_pedidos_{st.session_state['contador_form']}",
-    placeholder=(
-        "Exemplo:\n[14/10/2026 13:53]: Fulano\n25g castanha\nRua São Vicente 250\n\n"
-    )
-)
-vendedor_lote = st.text_input(
-    "Sigla do Vendedor `[ ]` para os pedidos acima:",
-    key=f"vendedor_lote_{st.session_state['contador_form']}",
-    placeholder="Ex: 2T, VG, NK"
-)
-
-if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True):
-    if texto_pedidos.strip():
-        with st.spinner("Extraindo pedidos, filtrando mensagens e buscando CEPs..."):
-            df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
-            if not df_extraidos.empty:
-                qtd_add, lista_dups = adicionar_pedidos_na_sessao(df_extraidos)
-                st.session_state["avisos_duplicados"] = lista_dups
-                st.session_state["contador_form"] += 1
-                st.rerun()
-            else:
-                st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
-    else:
-        st.warning("Cole pelo menos um pedido antes de clicar em adicionar.")
-
-if st.session_state.get("avisos_duplicados"):
-    dups_str = "\n".join([f"- **{d}**" for d in st.session_state["avisos_duplicados"]])
-    st.warning(
-        f"🚫 **{len(st.session_state['avisos_duplicados'])} pedido(s) com mesmo Nome e Endereço já estavam na lista e não foram inseridos duas vezes:**\n{dups_str}"
-    )
-    if st.button("✖️ Fechar aviso de duplicados"):
-        st.session_state["avisos_duplicados"] = []
+# ================= SELETOR DE MÓDULOS NO TOPO (2 BOTÕES PRINCIPAIS) =================
+col_nav1, col_nav2 = st.columns(2)
+with col_nav1:
+    tipo_btn_rotas = "primary" if st.session_state["modulo_ativo"] == "rotas" else "secondary"
+    if st.button("🛵 Gerador de Rotas", type=tipo_btn_rotas, use_container_width=True):
+        st.session_state["modulo_ativo"] = "rotas"
         st.rerun()
 
-# --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO ---
-if not st.session_state["df_pedidos"].empty:
-    st.divider()
-    total_pedidos = len(st.session_state["df_pedidos"])
-    st.subheader(f"2️⃣ Conferência dos Pedidos ({total_pedidos} na lista)")
+with col_nav2:
+    qtd_etiq_badge = len(st.session_state["df_etiquetas"])
+    texto_btn_etiq = f"🏷️ Gerador de Etiquetas ({qtd_etiq_badge})" if qtd_etiq_badge > 0 else "🏷️ Gerador de Etiquetas"
+    tipo_btn_etiq = "primary" if st.session_state["modulo_ativo"] == "etiquetas" else "secondary"
+    if st.button(texto_btn_etiq, type=tipo_btn_etiq, use_container_width=True):
+        st.session_state["modulo_ativo"] = "etiquetas"
+        st.rerun()
 
-    @st.fragment
-    def render_passo_2():
-        # Mantém df_base estável durante a digitação para nunca resetar células em edição!
-        df_base = st.session_state["df_pedidos"]
-        if "Excluir" not in df_base.columns:
-            df_base.insert(0, "Excluir", False)
-        if "Opcoes_Endereco" not in df_base.columns:
-            df_base["Opcoes_Endereco"] = "[]"
+st.divider()
 
-        linhas_ambiguas = []
-        for idx_amb, row_amb in df_base.iterrows():
-            try:
-                opcoes_lista = json.loads(row_amb.get("Opcoes_Endereco", "[]") or "[]")
-            except Exception:
-                opcoes_lista = []
-            if len(opcoes_lista) > 1:
-                linhas_ambiguas.append((idx_amb, row_amb["Cliente"], opcoes_lista))
 
-        if linhas_ambiguas:
-            st.warning(
-                f"🏘️ **Atenção: {len(linhas_ambiguas)} pedido(s) possuem rua que existe em mais de um bairro!** "
-                "Escolha abaixo qual é o bairro correto de cada cliente:"
-            )
-            for idx_amb, nome_cli_amb, opcoes_lista in linhas_ambiguas:
-                col_sel, col_btn_amb = st.columns([3, 1])
-                with col_sel:
-                    escolha_end = st.selectbox(
-                        f"Escolha o bairro/endereço correto para **{nome_cli_amb}**:",
-                        options=opcoes_lista,
-                        key=f"sel_amb_{idx_amb}"
-                    )
-                with col_btn_amb:
-                    st.write("")
-                    if st.button(f"✅ Confirmar ({nome_cli_amb})", key=f"btn_amb_{idx_amb}", use_container_width=True):
-                        df_sync = st.session_state.get("df_pedidos_editados", df_base).copy()
-                        lat_novo, lon_novo = geocodificar_endereco_rua(escolha_end)
-                        df_sync.at[idx_amb, "Endereco"] = escolha_end
-                        df_sync.at[idx_amb, "Status"] = "✅ OK"
-                        df_sync.at[idx_amb, "Lat"] = lat_novo
-                        df_sync.at[idx_amb, "Lon"] = lon_novo
-                        df_sync.at[idx_amb, "Opcoes_Endereco"] = "[]"
-                        atualizar_base_pedidos(df_sync)
-                        st.rerun()
+# ==============================================================================
+# MÓDULO 1: GERADOR DE ROTAS
+# ==============================================================================
+if st.session_state["modulo_ativo"] == "rotas":
+    st.title("🛵 Gerador de Rotas")
 
-        problemas = df_base[df_base["Status"] != "✅ OK"]
-        if not problemas.empty:
-            st.warning(
-                f"⚠️ **{len(problemas)} endereço(s) precisam da sua atenção!** "
-                "Escolha o bairro acima ou corrija o endereço na tabela abaixo e clique em '🔍 Buscar CEP após Editar Tabela'."
-            )
-        else:
-            st.success(f"✅ Todos os {len(df_base)} endereços foram localizados com Bairro e CEP!")
-
-        df_editado = st.data_editor(
-            df_base,
-            use_container_width=True,
-            hide_index=True,
-            column_order=["Excluir", "Status", "Cliente", "Vendedor", "Pacotes", "Observacao", "Posicao", "Endereco", "Itens_Lidos"],
-            column_config={
-                "Excluir": st.column_config.CheckboxColumn("🗑️", width="small", default=False),
-                "Status": st.column_config.TextColumn("Status", disabled=True, width="medium"),
-                "Cliente": st.column_config.TextColumn("Cliente (CAIXA ALTA)", width="medium"),
-                "Vendedor": st.column_config.TextColumn("Vendedor [ ]", width="small"),
-                "Pacotes": st.column_config.NumberColumn("Pacotes", min_value=1, max_value=10, step=1, width="small"),
-                "Observacao": st.column_config.TextColumn("Obs ( )", width="small"),
-                "Posicao": st.column_config.SelectboxColumn(
-                    "Posição",
-                    options=["Normal", "PRIMEIRO", "ÚLTIMO"],
-                    default="Normal",
-                    width="small"
-                ),
-                "Endereco": st.column_config.TextColumn("Endereço Completo (Editável)", width="large"),
-                "Itens_Lidos": st.column_config.TextColumn("Itens e Locais Identificados", disabled=True, width="medium"),
-            },
-            key=f"editor_tabela_pedidos_{st.session_state['versao_editor_pedidos']}"
+    if (
+        partida_ok
+        and not st.session_state["df_rotas_calculadas"].empty
+        and st.session_state["coord_partida_atual"] != (lat_partida, lon_partida)
+    ):
+        df_reotim, novo_km, nova_coord = recalcular_todas_as_rotas(
+            st.session_state.get("df_rotas_editadas", st.session_state["df_rotas_calculadas"]),
+            st.session_state["nomes_rotas_ativas"],
+            lat_partida,
+            lon_partida
         )
+        st.session_state["df_rotas_calculadas"] = df_reotim
+        st.session_state["df_rotas_editadas"] = df_reotim.copy()
+        st.session_state["versao_editor_rotas"] += 1
+        st.session_state["resumo_km_rotas"] = novo_km
+        st.session_state["coord_partida_atual"] = nova_coord
 
-        df_editado["Cliente"] = df_editado["Cliente"].astype(str).str.upper()
-        # Guarda as edições em df_pedidos_editados sem sobrescrever df_pedidos (evita resetar a tabela durante digitação)
-        st.session_state["df_pedidos_editados"] = df_editado
+    # --- PASSO 1: ADICIONAR PEDIDOS ---
+    st.subheader("1️⃣ Adicionar Pedidos")
 
-        col_acao1, col_acao2, col_acao3 = st.columns(3)
-
-        with col_acao1:
-            if st.button(
-                "🔍 Buscar CEP após Editar Tabela",
-                use_container_width=True,
-                help="Use caso tenha alterado endereços na tabela e queira rebuscar o CEP e Bairro oficial."
-            ):
-                with st.spinner("Buscando CEP e Bairro dos endereços..."):
-                    df_atualizados = df_editado.copy()
-                    for idx, row in df_atualizados.iterrows():
-                        end_novo, novo_status, lat, lon, novas_opcoes = buscar_endereco_completo(row["Endereco"])
-                        df_atualizados.at[idx, "Endereco"] = end_novo
-                        df_atualizados.at[idx, "Status"] = novo_status
-                        df_atualizados.at[idx, "Lat"] = lat
-                        df_atualizados.at[idx, "Lon"] = lon
-                        df_atualizados.at[idx, "Opcoes_Endereco"] = json.dumps(novas_opcoes, ensure_ascii=False)
-                    atualizar_base_pedidos(df_atualizados)
-                    st.rerun()
-
-        with col_acao2:
-            qtd_marcados = int(df_editado["Excluir"].sum()) if "Excluir" in df_editado.columns else 0
-            texto_btn_excluir = f"🗑️ Excluir Selecionados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Selecionados"
-            if st.button(texto_btn_excluir, use_container_width=True):
-                if qtd_marcados > 0:
-                    df_restante = df_editado[~df_editado["Excluir"]].copy()
-                    df_restante["Excluir"] = False
-                    atualizar_base_pedidos(df_restante)
-                    st.session_state["df_rotas_calculadas"] = pd.DataFrame()
-                    st.session_state["df_rotas_editadas"] = pd.DataFrame()
-                    st.rerun()
-                else:
-                    st.toast("Marque a caixinha '🗑️' na tabela ao lado do cliente que deseja remover.")
-
-        with col_acao3:
-            if st.button("🧹 Limpar Lista", use_container_width=True):
-                atualizar_base_pedidos(pd.DataFrame())
-                st.session_state["df_rotas_calculadas"] = pd.DataFrame()
-                st.session_state["df_rotas_editadas"] = pd.DataFrame()
-                st.session_state["avisos_duplicados"] = []
-                st.rerun()
-
-        with st.expander("👀 Ver prévia dos pedidos (Nomes e Endereços)", expanded=True):
-            linhas_previa = []
-            for _, row in df_editado.iterrows():
-                linhas_previa.append(f"{row['Endereco']}\n{montar_linha_cliente(row)}")
-            st.code("\n\n".join(linhas_previa), language="text", wrap_lines=True)
-
-    render_passo_2()
-
-    # --- PASSO 3: DIVISÃO E CÁLCULO DAS ROTAS ---
-    st.divider()
-    st.subheader("3️⃣ Dividir e Calcular Melhores Rotas")
-
-    df_para_calculo = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"])
-    total_pedidos_atual = len(df_para_calculo)
-
-    qtd_rotas = st.radio(
-        "Em quantas rotas deseja dividir os pedidos?",
-        options=[1, 2, 3, 4],
-        index=1 if total_pedidos_atual >= 2 else 0,
-        horizontal=True
+    texto_pedidos = st.text_area(
+        "Cole os pedidos abaixo:",
+        height=200,
+        key=f"texto_pedidos_{st.session_state['contador_form']}",
+        placeholder=(
+            "Exemplo:\n[14/10/2026 13:53]: Fulano\n25g castanha\nRua São Vicente 250\n\n"
+        )
+    )
+    vendedor_lote = st.text_input(
+        "Sigla do Vendedor `[ ]` para os pedidos acima:",
+        key=f"vendedor_lote_{st.session_state['contador_form']}",
+        placeholder="Ex: 2T, VG, NK"
     )
 
-    base_por_rota = total_pedidos_atual // qtd_rotas
-    sobra = total_pedidos_atual % qtd_rotas
-    sugestoes_padrao = [base_por_rota + (1 if i < sobra else 0) for i in range(qtd_rotas)]
-    nomes_sugeridos = ["ROTA FP", "ROTA LE", "ROTA 3", "ROTA 4"]
-
-    cols_rotas = st.columns(qtd_rotas)
-    nomes_escolhidos = []
-    cotas_escolhidas = []
-
-    for i in range(qtd_rotas):
-        with cols_rotas[i]:
-            nome_r = st.text_input(
-                f"Nome da Rota {i + 1}:",
-                value=nomes_sugeridos[i],
-                key=f"nome_rota_{i}_{qtd_rotas}"
-            )
-            cota_r = st.number_input(
-                f"Nº de Pedidos ({nome_r}):",
-                min_value=0,
-                max_value=total_pedidos_atual,
-                value=sugestoes_padrao[i],
-                step=1,
-                key=f"cota_rota_{i}_{qtd_rotas}_{total_pedidos_atual}"
-            )
-            nomes_escolhidos.append(formatar_titulo_rota(nome_r))
-            cotas_escolhidas.append(int(cota_r))
-
-    soma_cotas = sum(cotas_escolhidas)
-    if soma_cotas != total_pedidos_atual:
-        diferenca = total_pedidos_atual - soma_cotas
-        if diferenca > 0:
-            st.warning(f"⚠️ A soma das rotas está em **{soma_cotas}** pedidos, mas você tem **{total_pedidos_atual}** na lista (faltam distribuir **{diferenca}**).")
+    if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True):
+        if texto_pedidos.strip():
+            with st.spinner("Extraindo pedidos, filtrando mensagens e buscando CEPs..."):
+                df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
+                if not df_extraidos.empty:
+                    qtd_add, lista_dups = adicionar_pedidos_na_sessao(df_extraidos)
+                    st.session_state["avisos_duplicados"] = lista_dups
+                    st.session_state["contador_form"] += 1
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
         else:
-            st.warning(f"⚠️ A soma das rotas está em **{soma_cotas}** pedidos, mas você só tem **{total_pedidos_atual}** na lista (passou **{abs(diferenca)}**).")
+            st.warning("Cole pelo menos um pedido antes de clicar em adicionar.")
 
-    if not partida_ok:
-        st.error("⚠️ Corrija o Ponto de Partida na barra lateral esquerda antes de gerar as rotas.")
-
-    if st.button(
-        "🚀 Gerar e Otimizar Rotas",
-        type="primary",
-        use_container_width=True,
-        disabled=(soma_cotas != total_pedidos_atual or not partida_ok)
-    ):
-        with st.spinner("Agrupando regiões e calculando a melhor sequência rua a rua..."):
-            df_mais_recente = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"]).copy().reset_index(drop=True)
-            atualizar_base_pedidos(df_mais_recente)
-
-            nomes_unicos = []
-            for idx_n, nm in enumerate(nomes_escolhidos):
-                if nm in nomes_unicos:
-                    nm = f"{nm} ({idx_n + 1})"
-                nomes_unicos.append(nm)
-
-            rotas_atribuidas = dividir_pedidos_por_cota(
-                df_mais_recente,
-                nomes_unicos,
-                cotas_escolhidas,
-                lat_partida,
-                lon_partida
-            )
-            df_mais_recente["Rota"] = rotas_atribuidas
-
-            df_otimizado, resumo_km, coord_p = recalcular_todas_as_rotas(
-                df_mais_recente,
-                nomes_unicos,
-                lat_partida,
-                lon_partida
-            )
-
-            st.session_state["df_rotas_calculadas"] = df_otimizado
-            st.session_state["df_rotas_editadas"] = df_otimizado.copy()
-            st.session_state["versao_editor_rotas"] += 1
-            st.session_state["nomes_rotas_ativas"] = nomes_unicos
-            st.session_state["resumo_km_rotas"] = resumo_km
-            st.session_state["coord_partida_atual"] = coord_p
+    if st.session_state.get("avisos_duplicados"):
+        dups_str = "\n".join([f"- **{d}**" for d in st.session_state["avisos_duplicados"]])
+        st.warning(
+            f"🚫 **{len(st.session_state['avisos_duplicados'])} pedido(s) com mesmo Nome e Endereço já estavam na lista e não foram inseridos duas vezes:**\n{dups_str}"
+        )
+        if st.button("✖️ Fechar aviso de duplicados"):
+            st.session_state["avisos_duplicados"] = []
             st.rerun()
 
-# --- PASSO 4: ROTAS PRONTAS, TROCA ENTRE ROTAS E TEXTO PARA COPIAR ---
-if not st.session_state["df_rotas_calculadas"].empty:
-    st.divider()
-    st.subheader("4️⃣ Rotas Otimizadas e Ajuste Entre Rotas")
+    # --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO ---
+    if not st.session_state["df_pedidos"].empty:
+        st.divider()
+        total_pedidos = len(st.session_state["df_pedidos"])
+        st.subheader(f"2️⃣ Conferência dos Pedidos ({total_pedidos} na lista)")
 
-    @st.fragment
-    def render_passo_4():
-        df_rotas_base = st.session_state["df_rotas_calculadas"]
-        nomes_ativas = st.session_state["nomes_rotas_ativas"]
-        resumo_km = st.session_state["resumo_km_rotas"]
+        @st.fragment
+        def render_passo_2():
+            df_base = st.session_state["df_pedidos"]
+            if "Excluir" not in df_base.columns:
+                df_base.insert(0, "Excluir", False)
+            if "Opcoes_Endereco" not in df_base.columns:
+                df_base["Opcoes_Endereco"] = "[]"
 
-        st.caption(
-            "💡 **Quer passar um pedido de uma rota para outra ou mudar quem é o PRIMEIRO/ÚLTIMO?** "
-            "Basta alterar a coluna **'Rota'** ou **'Posição'** na tabela abaixo que o sistema recalcula a melhor ordem das rotas automaticamente!"
+            linhas_ambiguas = []
+            for idx_amb, row_amb in df_base.iterrows():
+                try:
+                    opcoes_lista = json.loads(row_amb.get("Opcoes_Endereco", "[]") or "[]")
+                except Exception:
+                    opcoes_lista = []
+                if len(opcoes_lista) > 1:
+                    linhas_ambiguas.append((idx_amb, row_amb["Cliente"], opcoes_lista))
+
+            if linhas_ambiguas:
+                st.warning(
+                    f"🏘️ **Atenção: {len(linhas_ambiguas)} pedido(s) possuem rua que existe em mais de um bairro!** "
+                    "Escolha abaixo qual é o bairro correto de cada cliente:"
+                )
+                for idx_amb, nome_cli_amb, opcoes_lista in linhas_ambiguas:
+                    col_sel, col_btn_amb = st.columns([3, 1])
+                    with col_sel:
+                        escolha_end = st.selectbox(
+                            f"Escolha o bairro/endereço correto para **{nome_cli_amb}**:",
+                            options=opcoes_lista,
+                            key=f"sel_amb_{idx_amb}"
+                        )
+                    with col_btn_amb:
+                        st.write("")
+                        if st.button(f"✅ Confirmar ({nome_cli_amb})", key=f"btn_amb_{idx_amb}", use_container_width=True):
+                            df_sync = st.session_state.get("df_pedidos_editados", df_base).copy()
+                            lat_novo, lon_novo = geocodificar_endereco_rua(escolha_end)
+                            df_sync.at[idx_amb, "Endereco"] = escolha_end
+                            df_sync.at[idx_amb, "Status"] = "✅ OK"
+                            df_sync.at[idx_amb, "Lat"] = lat_novo
+                            df_sync.at[idx_amb, "Lon"] = lon_novo
+                            df_sync.at[idx_amb, "Opcoes_Endereco"] = "[]"
+                            atualizar_base_pedidos(df_sync)
+                            st.rerun()
+
+            problemas = df_base[df_base["Status"] != "✅ OK"]
+            if not problemas.empty:
+                st.warning(
+                    f"⚠️ **{len(problemas)} endereço(s) precisam da sua atenção!** "
+                    "Escolha o bairro acima ou corrija o endereço na tabela abaixo e clique em '🔍 Buscar CEP após Editar Tabela'."
+                )
+            else:
+                st.success(f"✅ Todos os {len(df_base)} endereços foram localizados com Bairro e CEP!")
+
+            df_editado = st.data_editor(
+                df_base,
+                use_container_width=True,
+                hide_index=True,
+                column_order=["Excluir", "Status", "Cliente", "Vendedor", "Pacotes", "Observacao", "Posicao", "Endereco", "Itens_Lidos"],
+                column_config={
+                    "Excluir": st.column_config.CheckboxColumn("🗑️", width="small", default=False),
+                    "Status": st.column_config.TextColumn("Status", disabled=True, width="medium"),
+                    "Cliente": st.column_config.TextColumn("Cliente (CAIXA ALTA)", width="medium"),
+                    "Vendedor": st.column_config.TextColumn("Vendedor [ ]", width="small"),
+                    "Pacotes": st.column_config.NumberColumn("Pacotes", min_value=1, max_value=10, step=1, width="small"),
+                    "Observacao": st.column_config.TextColumn("Obs ( )", width="small"),
+                    "Posicao": st.column_config.SelectboxColumn(
+                        "Posição",
+                        options=["Normal", "PRIMEIRO", "ÚLTIMO"],
+                        default="Normal",
+                        width="small"
+                    ),
+                    "Endereco": st.column_config.TextColumn("Endereço Completo (Editável)", width="large"),
+                    "Itens_Lidos": st.column_config.TextColumn("Itens e Locais Identificados", disabled=True, width="medium"),
+                },
+                key=f"editor_tabela_pedidos_{st.session_state['versao_editor_pedidos']}"
+            )
+
+            df_editado["Cliente"] = df_editado["Cliente"].astype(str).str.upper()
+            st.session_state["df_pedidos_editados"] = df_editado
+
+            col_acao1, col_acao2, col_acao3 = st.columns(3)
+
+            with col_acao1:
+                if st.button(
+                    "🔍 Buscar CEP após Editar Tabela",
+                    use_container_width=True,
+                    help="Use caso tenha alterado endereços na tabela e queira rebuscar o CEP e Bairro oficial."
+                ):
+                    with st.spinner("Buscando CEP e Bairro dos endereços..."):
+                        df_atualizados = df_editado.copy()
+                        for idx, row in df_atualizados.iterrows():
+                            end_novo, novo_status, lat, lon, novas_opcoes = buscar_endereco_completo(row["Endereco"])
+                            df_atualizados.at[idx, "Endereco"] = end_novo
+                            df_atualizados.at[idx, "Status"] = novo_status
+                            df_atualizados.at[idx, "Lat"] = lat
+                            df_atualizados.at[idx, "Lon"] = lon
+                            df_atualizados.at[idx, "Opcoes_Endereco"] = json.dumps(novas_opcoes, ensure_ascii=False)
+                        atualizar_base_pedidos(df_atualizados)
+                        st.rerun()
+
+            with col_acao2:
+                qtd_marcados = int(df_editado["Excluir"].sum()) if "Excluir" in df_editado.columns else 0
+                texto_btn_excluir = f"🗑️ Excluir Selecionados ({qtd_marcados})" if qtd_marcados > 0 else "🗑️ Excluir Selecionados"
+                if st.button(texto_btn_excluir, use_container_width=True):
+                    if qtd_marcados > 0:
+                        df_restante = df_editado[~df_editado["Excluir"]].copy()
+                        df_restante["Excluir"] = False
+                        atualizar_base_pedidos(df_restante)
+                        st.session_state["df_rotas_calculadas"] = pd.DataFrame()
+                        st.session_state["df_rotas_editadas"] = pd.DataFrame()
+                        st.rerun()
+                    else:
+                        st.toast("Marque a caixinha '🗑️' na tabela ao lado do cliente que deseja remover.")
+
+            with col_acao3:
+                if st.button("🧹 Limpar Lista", use_container_width=True):
+                    atualizar_base_pedidos(pd.DataFrame())
+                    st.session_state["df_rotas_calculadas"] = pd.DataFrame()
+                    st.session_state["df_rotas_editadas"] = pd.DataFrame()
+                    st.session_state["avisos_duplicados"] = []
+                    st.rerun()
+
+            with st.expander("👀 Ver prévia dos pedidos (Nomes e Endereços)", expanded=True):
+                linhas_previa = []
+                for _, row in df_editado.iterrows():
+                    linhas_previa.append(f"{row['Endereco']}\n{montar_linha_cliente(row)}")
+                st.code("\n\n".join(linhas_previa), language="text", wrap_lines=True)
+
+        render_passo_2()
+
+        # --- PASSO 3: DIVISÃO E CÁLCULO DAS ROTAS ---
+        st.divider()
+        st.subheader("3️⃣ Dividir e Calcular Melhores Rotas")
+
+        df_para_calculo = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"])
+        total_pedidos_atual = len(df_para_calculo)
+
+        qtd_rotas = st.radio(
+            "Em quantas rotas deseja dividir os pedidos?",
+            options=[1, 2, 3, 4],
+            index=1 if total_pedidos_atual >= 2 else 0,
+            horizontal=True
         )
 
-        df_rotas_edit = st.data_editor(
-            df_rotas_base,
+        base_por_rota = total_pedidos_atual // qtd_rotas
+        sobra = total_pedidos_atual % qtd_rotas
+        sugestoes_padrao = [base_por_rota + (1 if i < sobra else 0) for i in range(qtd_rotas)]
+        nomes_sugeridos = ["ROTA FP", "ROTA LE", "ROTA 3", "ROTA 4"]
+
+        cols_rotas = st.columns(qtd_rotas)
+        nomes_escolhidos = []
+        cotas_escolhidas = []
+
+        for i in range(qtd_rotas):
+            with cols_rotas[i]:
+                nome_r = st.text_input(
+                    f"Nome da Rota {i + 1}:",
+                    value=nomes_sugeridos[i],
+                    key=f"nome_rota_{i}_{qtd_rotas}"
+                )
+                cota_r = st.number_input(
+                    f"Nº de Pedidos ({nome_r}):",
+                    min_value=0,
+                    max_value=total_pedidos_atual,
+                    value=sugestoes_padrao[i],
+                    step=1,
+                    key=f"cota_rota_{i}_{qtd_rotas}_{total_pedidos_atual}"
+                )
+                nomes_escolhidos.append(formatar_titulo_rota(nome_r))
+                cotas_escolhidas.append(int(cota_r))
+
+        soma_cotas = sum(cotas_escolhidas)
+        if soma_cotas != total_pedidos_atual:
+            diferenca = total_pedidos_atual - soma_cotas
+            if diferenca > 0:
+                st.warning(f"⚠️ A soma das rotas está em **{soma_cotas}** pedidos, mas você tem **{total_pedidos_atual}** na lista (faltam distribuir **{diferenca}**).")
+            else:
+                st.warning(f"⚠️ A soma das rotas está em **{soma_cotas}** pedidos, mas você só tem **{total_pedidos_atual}** na lista (passou **{abs(diferenca)}**).")
+
+        if not partida_ok:
+            st.error("⚠️ Corrija o Ponto de Partida na barra lateral esquerda antes de gerar as rotas.")
+
+        if st.button(
+            "🚀 Gerar e Otimizar Rotas",
+            type="primary",
             use_container_width=True,
-            hide_index=True,
-            column_order=["Rota", "Ordem", "Posicao", "Cliente", "Vendedor", "Pacotes", "Observacao", "Endereco"],
-            column_config={
-                "Rota": st.column_config.SelectboxColumn(
-                    "🔄 Rota (Trocar)",
-                    options=nomes_ativas,
-                    required=True,
-                    width="medium"
-                ),
-                "Ordem": st.column_config.TextColumn("Ordem", disabled=True, width="small"),
-                "Posicao": st.column_config.SelectboxColumn(
-                    "Posição",
-                    options=["Normal", "PRIMEIRO", "ÚLTIMO"],
-                    required=True,
-                    width="small"
-                ),
-                "Cliente": st.column_config.TextColumn("Cliente", width="medium"),
-                "Vendedor": st.column_config.TextColumn("Vend. [ ]", width="small"),
-                "Pacotes": st.column_config.NumberColumn("PCT", min_value=1, max_value=10, step=1, width="small"),
-                "Observacao": st.column_config.TextColumn("Obs ( )", width="small"),
-                "Endereco": st.column_config.TextColumn("Endereço", width="large"),
-            },
-            key=f"editor_tabela_rotas_{st.session_state['versao_editor_rotas']}"
-        )
+            disabled=(soma_cotas != total_pedidos_atual or not partida_ok)
+        ):
+            with st.spinner("Agrupando regiões e calculando a melhor sequência rua a rua..."):
+                df_mais_recente = st.session_state.get("df_pedidos_editados", st.session_state["df_pedidos"]).copy().reset_index(drop=True)
+                atualizar_base_pedidos(df_mais_recente)
 
-        df_rotas_edit["Cliente"] = df_rotas_edit["Cliente"].astype(str).str.upper()
-        st.session_state["df_rotas_editadas"] = df_rotas_edit
+                nomes_unicos = []
+                for idx_n, nm in enumerate(nomes_escolhidos):
+                    if nm in nomes_unicos:
+                        nm = f"{nm} ({idx_n + 1})"
+                    nomes_unicos.append(nm)
 
-        mudou_rota_ou_pos = (
-            not df_rotas_edit["Rota"].equals(df_rotas_base["Rota"]) or
-            not df_rotas_edit["Posicao"].equals(df_rotas_base["Posicao"])
-        )
-
-        if mudou_rota_ou_pos and partida_ok:
-            with st.spinner("Recalculando a melhor sequência das rotas após a alteração..."):
-                df_reotimizado, novo_km, coord_p = recalcular_todas_as_rotas(
-                    df_rotas_edit,
-                    nomes_ativas,
+                rotas_atribuidas = dividir_pedidos_por_cota(
+                    df_mais_recente,
+                    nomes_unicos,
+                    cotas_escolhidas,
                     lat_partida,
                     lon_partida
                 )
-                st.session_state["df_rotas_calculadas"] = df_reotimizado
-                st.session_state["df_rotas_editadas"] = df_reotimizado.copy()
+                df_mais_recente["Rota"] = rotas_atribuidas
+
+                df_otimizado, resumo_km, coord_p = recalcular_todas_as_rotas(
+                    df_mais_recente,
+                    nomes_unicos,
+                    lat_partida,
+                    lon_partida
+                )
+
+                st.session_state["df_rotas_calculadas"] = df_otimizado
+                st.session_state["df_rotas_editadas"] = df_otimizado.copy()
                 st.session_state["versao_editor_rotas"] += 1
-                st.session_state["resumo_km_rotas"] = novo_km
+                st.session_state["nomes_rotas_ativas"] = nomes_unicos
+                st.session_state["resumo_km_rotas"] = resumo_km
                 st.session_state["coord_partida_atual"] = coord_p
                 st.rerun()
 
-        df_exibicao = st.session_state.get("df_rotas_editadas", df_rotas_base)
+    # --- PASSO 4: ROTAS PRONTAS, TROCA ENTRE ROTAS E BOTÃO DE ETIQUETAS ---
+    if not st.session_state["df_rotas_calculadas"].empty:
+        st.divider()
+        st.subheader("4️⃣ Rotas Otimizadas e Ajuste Entre Rotas")
 
-        with st.expander("🗺️ Ver Mapa das Rotas (Pinos Numerados por Ordem de Entrega)", expanded=True):
-            renderizar_mapa_rotas(
-                df_exibicao,
-                nomes_ativas,
-                st.session_state["coord_partida_atual"],
-                desc_partida_validada
+        @st.fragment
+        def render_passo_4():
+            df_rotas_base = st.session_state["df_rotas_calculadas"]
+            nomes_ativas = st.session_state["nomes_rotas_ativas"]
+            resumo_km = st.session_state["resumo_km_rotas"]
+
+            st.caption(
+                "💡 **Quer passar um pedido de uma rota para outra ou mudar quem é o PRIMEIRO/ÚLTIMO?** "
+                "Basta alterar a coluna **'Rota'** ou **'Posição'** na tabela abaixo que o sistema recalcula a melhor ordem das rotas automaticamente!"
             )
 
-        st.markdown("### 📋 Textos Prontos para Copiar (WhatsApp / Telegram)")
-        st.caption("Clique no ícone de copiar no canto superior direito de cada caixa preta abaixo:")
+            df_rotas_edit = st.data_editor(
+                df_rotas_base,
+                use_container_width=True,
+                hide_index=True,
+                column_order=["Rota", "Ordem", "Posicao", "Cliente", "Vendedor", "Pacotes", "Observacao", "Endereco"],
+                column_config={
+                    "Rota": st.column_config.SelectboxColumn(
+                        "🔄 Rota (Trocar)",
+                        options=nomes_ativas,
+                        required=True,
+                        width="medium"
+                    ),
+                    "Ordem": st.column_config.TextColumn("Ordem", disabled=True, width="small"),
+                    "Posicao": st.column_config.SelectboxColumn(
+                        "Posição",
+                        options=["Normal", "PRIMEIRO", "ÚLTIMO"],
+                        required=True,
+                        width="small"
+                    ),
+                    "Cliente": st.column_config.TextColumn("Cliente", width="medium"),
+                    "Vendedor": st.column_config.TextColumn("Vend. [ ]", width="small"),
+                    "Pacotes": st.column_config.NumberColumn("PCT", min_value=1, max_value=10, step=1, width="small"),
+                    "Observacao": st.column_config.TextColumn("Obs ( )", width="small"),
+                    "Endereco": st.column_config.TextColumn("Endereço", width="large"),
+                },
+                key=f"editor_tabela_rotas_{st.session_state['versao_editor_rotas']}"
+            )
 
-        cols_texto = st.columns(min(len(nomes_ativas), 2))
+            df_rotas_edit["Cliente"] = df_rotas_edit["Cliente"].astype(str).str.upper()
+            st.session_state["df_rotas_editadas"] = df_rotas_edit
 
-        for idx_r, nome_r in enumerate(nomes_ativas):
-            sub_rota = df_exibicao[df_exibicao["Rota"] == nome_r]
-            col_atual = cols_texto[idx_r % len(cols_texto)]
+            mudou_rota_ou_pos = (
+                not df_rotas_edit["Rota"].equals(df_rotas_base["Rota"]) or
+                not df_rotas_edit["Posicao"].equals(df_rotas_base["Posicao"])
+            )
 
-            with col_atual:
-                qtd_entregas = len(sub_rota)
-                total_pct_rota = int(sub_rota["Pacotes"].sum()) if not sub_rota.empty else 0
-                km_desta_rota = resumo_km.get(nome_r, 0.0)
+            if mudou_rota_ou_pos and partida_ok:
+                with st.spinner("Recalculando a melhor sequência das rotas após a alteração..."):
+                    df_reotimizado, novo_km, coord_p = recalcular_todas_as_rotas(
+                        df_rotas_edit,
+                        nomes_ativas,
+                        lat_partida,
+                        lon_partida
+                    )
+                    st.session_state["df_rotas_calculadas"] = df_reotimizado
+                    st.session_state["df_rotas_editadas"] = df_reotimizado.copy()
+                    st.session_state["versao_editor_rotas"] += 1
+                    st.session_state["resumo_km_rotas"] = novo_km
+                    st.session_state["coord_partida_atual"] = coord_p
+                    st.rerun()
 
-                st.markdown(
-                    f"**{nome_r}** — `{qtd_entregas} entregas` | `{total_pct_rota} pacotes` | `~{km_desta_rota} km`"
+            df_exibicao = st.session_state.get("df_rotas_editadas", df_rotas_base)
+
+            with st.expander("🗺️ Ver Mapa das Rotas (Pinos Numerados por Ordem de Entrega)", expanded=True):
+                renderizar_mapa_rotas(
+                    df_exibicao,
+                    nomes_ativas,
+                    st.session_state["coord_partida_atual"],
+                    desc_partida_validada
                 )
 
-                blocos_paradas = [nome_r]
-                for _, row_p in sub_rota.iterrows():
-                    blocos_paradas.append(f"{row_p['Endereco']}\n{montar_linha_cliente(row_p)}")
+            st.markdown("### 📋 Textos Prontos para Copiar (WhatsApp / Telegram)")
+            st.caption("Clique no ícone de copiar no canto superior direito de cada caixa preta abaixo:")
 
-                texto_final_rota = "\n\n".join(blocos_paradas)
-                st.code(texto_final_rota, language="text", wrap_lines=True)
+            cols_texto = st.columns(min(len(nomes_ativas), 2))
 
-    render_passo_4()
+            for idx_r, nome_r in enumerate(nomes_ativas):
+                sub_rota = df_exibicao[df_exibicao["Rota"] == nome_r]
+                col_atual = cols_texto[idx_r % len(cols_texto)]
+
+                with col_atual:
+                    qtd_entregas = len(sub_rota)
+                    total_pct_rota = int(sub_rota["Pacotes"].sum()) if not sub_rota.empty else 0
+                    km_desta_rota = resumo_km.get(nome_r, 0.0)
+
+                    st.markdown(
+                        f"**{nome_r}** — `{qtd_entregas} entregas` | `{total_pct_rota} pacotes` | `~{km_desta_rota} km`"
+                    )
+
+                    blocos_paradas = [nome_r]
+                    for _, row_p in sub_rota.iterrows():
+                        blocos_paradas.append(f"{row_p['Endereco']}\n{montar_linha_cliente(row_p)}")
+
+                    texto_final_rota = "\n\n".join(blocos_paradas)
+                    st.code(texto_final_rota, language="text", wrap_lines=True)
+
+            st.divider()
+            st.markdown("### 🏷️ Gerar Etiquetas 10x15 das Rotas Criadas")
+            st.caption("Clique no botão abaixo para enviar todas as rotas acima diretamente para o Gerador de Etiquetas:")
+            if st.button("🏷️ Gerar Etiquetas das Rotas Criadas", type="primary", use_container_width=True):
+                df_etiq_importadas = importar_etiquetas_das_rotas_calculadas(df_exibicao)
+                atualizar_base_etiquetas(df_etiq_importadas)
+                st.session_state["modulo_ativo"] = "etiquetas"
+                st.rerun()
+
+        render_passo_4()
+
+
+# ==============================================================================
+# MÓDULO 2: GERADOR DE ETIQUETAS (10x15cm)
+# ==============================================================================
+elif st.session_state["modulo_ativo"] == "etiquetas":
+    st.title("🏷️ Gerador de Etiquetas (10x15 cm)")
+
+    caminho_modelo_repo = localizar_modelo_pdf_no_repositorio()
+    arquivo_modelo_upload = None
+
+    if caminho_modelo_repo:
+        st.success(f"✅ Modelo de etiqueta carregado automaticamente do repositório (`{os.path.basename(caminho_modelo_repo)}`).")
+    else:
+        st.warning("⚠️ O arquivo `Etiqueta.pdf` não foi encontrado na pasta do GitHub. Faça o upload dele abaixo ou adicione `Etiqueta.pdf` ao repositório.")
+        arquivo_modelo_upload = st.file_uploader("Subir modelo Etiqueta.pdf", type="pdf")
+
+    # Se já existirem rotas calculadas no Gerador de Rotas, oferece atalho rápido para puxá-las
+    if not st.session_state["df_rotas_calculadas"].empty:
+        df_rotas_disp = st.session_state.get("df_rotas_editadas", st.session_state["df_rotas_calculadas"])
+        if st.button(f"📥 Puxar Automaticamente as {len(df_rotas_disp)} Entregas das Rotas Calculadas", use_container_width=True):
+            df_imp = importar_etiquetas_das_rotas_calculadas(df_rotas_disp)
+            atualizar_base_etiquetas(df_imp)
+            st.rerun()
+
+    # --- 1) COLAR LISTA DE NOMES E ENDEREÇOS (MESMO FORMATO DO GERADOR DE ROTAS) ---
+    st.subheader("1️⃣ Colar Lista de Nomes e Endereços")
+    texto_lista_etiquetas = st.text_area(
+        "Cole abaixo a lista de entregas (no mesmo formato gerado pelo Gerador de Rotas):",
+        height=200,
+        key=f"texto_etiquetas_{st.session_state['contador_form_etiquetas']}",
+        placeholder=(
+            "ROTA FP\n\n"
+            "Rua Marrocos, 47, Vila Jardim Leblon, Belo Horizonte, 31575-230\n"
+            "AXEL [2T] (2PCT)\n\n"
+            "Rua São Vicente, 250, Granja Werneck, Belo Horizonte, 31840-410\n"
+            "JOÃO SILVA [VG]"
+        )
+    )
+
+    if st.button("➕ Extrair e Adicionar Etiquetas da Lista", type="primary", use_container_width=True):
+        if texto_lista_etiquetas.strip():
+            df_novas_etiq = extrair_etiquetas_de_texto_rota(texto_lista_etiquetas)
+            if not df_novas_etiq.empty:
+                df_atual_etiq = st.session_state.get("df_etiquetas_editadas", st.session_state["df_etiquetas"])
+                if df_atual_etiq.empty:
+                    df_comb = df_novas_etiq
+                else:
+                    df_comb = pd.concat([df_atual_etiq, df_novas_etiq], ignore_index=True)
+                atualizar_base_etiquetas(df_comb)
+                st.session_state["contador_form_etiquetas"] += 1
+                st.rerun()
+            else:
+                st.warning("⚠️ Não foi possível identificar pares de endereço e cliente no texto colado.")
+        else:
+            st.warning("Cole a lista de entregas antes de clicar no botão.")
+
+    with st.expander("➕ Adicionar um Cliente Individualmente"):
+        col_m1, col_m2, col_m3 = st.columns([2, 3, 1])
+        with col_m1:
+            m_nome = st.text_input("Nome do Cliente (ex: AXEL [2T] (2PCT)):")
+        with col_m2:
+            m_end = st.text_input("Endereço Completo (ex: Rua Marrocos, 47, Vila Jardim Leblon, Belo Horizonte, 31575-230):")
+        with col_m3:
+            m_rota = st.text_input("Rota:", value="AVULSO")
+
+        if st.button("Adicionar Cliente Avulso", use_container_width=True):
+            if m_nome.strip() and m_end.strip():
+                df_atual_etiq = st.session_state.get("df_etiquetas_editadas", st.session_state["df_etiquetas"])
+                nova_linha = pd.DataFrame([{
+                    "Imprimir": True,
+                    "Rota": m_rota.strip().upper() or "AVULSO",
+                    "Ordem": f"{len(df_atual_etiq) + 1}º",
+                    "Nome Etiqueta": limpar_nome_para_etiqueta(m_nome),
+                    "Endereco Etiqueta": formatar_endereco_para_etiqueta(m_end),
+                    "Nome Original": m_nome.strip().upper(),
+                    "Endereco Original": m_end.strip()
+                }])
+                df_comb = pd.concat([df_atual_etiq, nova_linha], ignore_index=True) if not df_atual_etiq.empty else nova_linha
+                atualizar_base_etiquetas(df_comb)
+                st.rerun()
+            else:
+                st.warning("Preencha o Nome e o Endereço.")
+
+    # --- 2) SELEÇÃO, EDIÇÃO E DOWNLOAD DO PDF 10x15 ---
+    if not st.session_state["df_etiquetas"].empty:
+        st.divider()
+        st.subheader("2️⃣ Selecionar e Baixar Etiquetas em PDF Único (10x15 cm)")
+
+        @st.fragment
+        def render_tabela_etiquetas():
+            df_base_e = st.session_state["df_etiquetas"]
+            if "Imprimir" not in df_base_e.columns:
+                df_base_e.insert(0, "Imprimir", True)
+
+            rotas_presentes = sorted(list(df_base_e["Rota"].dropna().unique()))
+
+            # Botões rápidos de seleção
+            c_sel1, c_sel2, c_sel3, c_sel4 = st.columns(4)
+            with c_sel1:
+                if st.button("☑️ Marcar Todas", use_container_width=True):
+                    df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
+                    df_sync["Imprimir"] = True
+                    atualizar_base_etiquetas(df_sync)
+                    st.rerun()
+            with c_sel2:
+                if st.button("🔲 Desmarcar Todas", use_container_width=True):
+                    df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
+                    df_sync["Imprimir"] = False
+                    atualizar_base_etiquetas(df_sync)
+                    st.rerun()
+            with c_sel3:
+                if st.button("🗑️ Excluir Desmarcadas", use_container_width=True):
+                    df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
+                    df_rest = df_sync[df_sync["Imprimir"]].copy()
+                    atualizar_base_etiquetas(df_rest)
+                    st.rerun()
+            with c_sel4:
+                if st.button("🧹 Limpar Lista de Etiquetas", use_container_width=True):
+                    atualizar_base_etiquetas(pd.DataFrame())
+                    st.rerun()
+
+            if len(rotas_presentes) > 1:
+                st.caption("Filtrar seleção rápida por Rota:")
+                cols_f = st.columns(len(rotas_presentes))
+                for idx_f, r_nome in enumerate(rotas_presentes):
+                    with cols_f[idx_f]:
+                        if st.button(f"🎯 Só {r_nome}", key=f"btn_filtro_etiq_{idx_f}", use_container_width=True):
+                            df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
+                            df_sync["Imprimir"] = df_sync["Rota"] == r_nome
+                            atualizar_base_etiquetas(df_sync)
+                            st.rerun()
+
+            df_etiq_edit = st.data_editor(
+                df_base_e,
+                use_container_width=True,
+                hide_index=True,
+                column_order=["Imprimir", "Rota", "Ordem", "Nome Etiqueta", "Endereco Etiqueta"],
+                column_config={
+                    "Imprimir": st.column_config.CheckboxColumn("🖨️ Imprimir", width="small", default=True),
+                    "Rota": st.column_config.TextColumn("Rota", width="small"),
+                    "Ordem": st.column_config.TextColumn("Ordem", width="small"),
+                    "Nome Etiqueta": st.column_config.TextColumn("Destinatário na Etiqueta (Editável)", width="medium"),
+                    "Endereco Etiqueta": st.column_config.TextColumn("Endereço na Etiqueta (Editável)", width="large"),
+                },
+                key=f"editor_tabela_etiquetas_{st.session_state['versao_editor_etiquetas']}"
+            )
+
+            df_etiq_edit["Nome Etiqueta"] = df_etiq_edit["Nome Etiqueta"].astype(str).str.upper()
+            st.session_state["df_etiquetas_editadas"] = df_etiq_edit
+
+            df_selecionadas = df_etiq_edit[df_etiq_edit["Imprimir"]].copy()
+            qtd_selecionadas = len(df_selecionadas)
+
+            st.markdown(f"**Etiquetas selecionadas para o PDF:** `{qtd_selecionadas}` de `{len(df_etiq_edit)}`")
+
+            fonte_pdf = caminho_modelo_repo if caminho_modelo_repo else arquivo_modelo_upload
+
+            if not fonte_pdf:
+                st.error("⚠️ Adicione o arquivo `Etiqueta.pdf` no seu repositório GitHub ou faça upload acima para liberar o download.")
+            elif qtd_selecionadas == 0:
+                st.warning("⚠️ Marque pelo menos uma etiqueta na coluna '🖨️ Imprimir' para gerar o PDF.")
+            else:
+                pdf_bytes = gerar_pdf_etiquetas_10x15(df_selecionadas, fonte_pdf)
+                st.download_button(
+                    label=f"📥 BAIXAR PDF ÚNICO 10x15 ({qtd_selecionadas} ETIQUETAS SELECIONADAS)",
+                    data=pdf_bytes,
+                    file_name="etiquetas_10x15.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
+
+        render_tabela_etiquetas()
