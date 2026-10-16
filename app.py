@@ -7,6 +7,7 @@ import json
 import os
 import math
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from urllib.parse import quote
 from io import BytesIO
@@ -161,11 +162,18 @@ MAPA_BAIRROS_RMBH = {
 COORDENADAS_BAIRROS_FIXOS = {
     "maria goretti": (-19.8808, -43.9178, "Bairro Santa Maria Goretti (Regional Nordeste), Belo Horizonte"),
     "santa maria goretti": (-19.8808, -43.9178, "Bairro Santa Maria Goretti (Regional Nordeste), Belo Horizonte"),
+    "savassi": (-19.9369, -43.9366, "Bairro Savassi (Centro-Sul), Belo Horizonte"),
+    "centro": (-19.9191, -43.9386, "Bairro Centro, Belo Horizonte"),
+}
+
+REGIONAIS_BH = {
+    "centro-sul", "centro sul", "noroeste", "nordeste", "norte",
+    "leste", "oeste", "pampulha", "venda nova", "barreiro"
 }
 
 PREFIXOS_RUA = (
-    "rua ", "r. ", "r ", "av ", "av. ", "avenida ", "alameda ", "al. ",
-    "praca ", "praça ", "travessa ", "tv. ", "beco ", "rodovia ", "estrada ", "anel "
+    "rua ", "r. ", "r.", "r ", "av ", "av. ", "av.", "avenida ", "alameda ", "al. ", "al.",
+    "praca ", "praça ", "travessa ", "tv. ", "tv.", "beco ", "rodovia ", "estrada ", "anel "
 )
 
 TITULOS_E_STOPWORDS_RUA = {
@@ -447,6 +455,9 @@ def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
 
     linha_limpa = remover_acentos(bruta.lower())
 
+    if re.match(r"^(endereco|end\.?|local|entrega)\s*[:\-]", linha_limpa):
+        return True
+
     if eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";") or bruta.endswith(":"):
         return False
 
@@ -454,26 +465,23 @@ def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
         if re.match(rf"^{pal_proibida}\b", linha_limpa):
             return False
 
-    if re.match(r"^(endereco|end\.?|local|entrega)\s*[:\-]", linha_limpa):
-        return True
-
     if re.match(r"^\d+", linha_limpa):
         return False
 
     if linha_limpa.startswith(PREFIXOS_RUA):
         return True
 
-    if re.search(r"\b(rua|avenida|av\.?|alameda|travessa|praca|rodovia)\s+[a-z]{3,}", linha_limpa) and re.search(r"\b\d{1,5}\b", linha_limpa):
+    if re.search(r"\b(rua|avenida|av\.?|alameda|travessa|praca|rodovia)\s*[a-z]{2,}", linha_limpa) and re.search(r"\b(?:n\.?\s*)?\d{1,5}\b", linha_limpa):
         return True
 
     if re.search(r"\b\d+(?:[.,/]\d+)?\s*(g|gr|kg|ml|un|pct|x|@|#)\b", linha_limpa) or "@" in linha_limpa or "#" in linha_limpa:
         return False
 
-    match_via_num = re.search(r"^([a-z\s.,'-]{3,}?)\s*[,.]?\s*(\d{1,5})\b", linha_limpa)
+    match_via_num = re.search(r"^([a-z\s.,'-]{3,}?)\s*(?:[,.]|\s+|\bn\.?\s*)(\d{1,5})\b", linha_limpa)
     if match_via_num:
         nome_antes_num = match_via_num.group(1).strip(" ,.-")
         palavras_todas = re.findall(r"[a-z]{2,}", linha_limpa)
-        if len(palavras_todas) >= 2:
+        if len(palavras_todas) >= 2 and not texto_parece_produto_cadastrado(nome_antes_num, locais_dict):
             return True
         if len(nome_antes_num) >= 4 and not texto_parece_produto_cadastrado(nome_antes_num, locais_dict):
             return True
@@ -481,38 +489,67 @@ def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
     return False
 
 
-def eh_complemento_pos_endereco(linha: str) -> bool:
-    limpa = remover_acentos(linha.strip().lower())
-    if not limpa:
+def eh_complemento_pos_endereco(linha: str, locais_dict: dict = None) -> bool:
+    bruta = linha.strip()
+    limpa = remover_acentos(bruta.lower())
+    if not limpa or eh_subtitulo_ou_divisoria(bruta):
         return False
-    if re.match(r"^(cep|bairro|apto|ap\.?|apartamento|bloco|bl\.?|casa|condominio|ed\.?|edificio)\b", limpa):
+    if eh_linha_produto_clara(bruta, locais_dict) or texto_parece_produto_cadastrado(bruta, locais_dict):
+        return False
+    if re.match(r"^(cliente|nome|pedido|ped|mercadoria|itens?)\s*[:\-]", limpa):
+        return False
+    if re.match(r"^(cep|bairro|apto|ap\.?|apartamento|bloco|bl\.?|casa|condominio|ed\.?|edificio|proximo|prox|ref|referencia|academia|clube|loja|portaria)\b", limpa):
         return True
     if re.match(r"^\d{5}-?\d{3}$", limpa):
+        return True
+    for cid in CIDADES_RMBH:
+        if re.search(rf"\b{cid}\b", limpa):
+            return True
+    for b_rmbh in MAPA_BAIRROS_RMBH:
+        if re.search(rf"\b{re.escape(b_rmbh)}\b", limpa):
+            return True
+    if "no gps" in limpa or "centro de " in limpa or re.match(r"^(jardim|vila|parque|conjunto|santa|sao|santo|padre|nossa senhora|vereda|planalto|providencia|camargos|caicara|barro preto|sion|serra|ipiranga|cidade nova|rio branco|bonsucesso)\b", limpa):
         return True
     return False
 
 
 def limpar_nome_cliente(linha: str) -> str:
-    nome = re.sub(r"^(cliente|nome|pedido|ped)\s*[:\-]?\s+", "", linha.strip(), flags=re.IGNORECASE)
-    return nome.strip().upper()
+    limpa = re.sub(r"^(cliente|nome|pedido|ped)\s*[:\-]?\s+", "", linha.strip(), flags=re.IGNORECASE)
+    return limpa.strip(" .,-:").upper()
 
 
-def pode_ser_nome_cliente(linha: str) -> bool:
+def pode_ser_nome_cliente(linha: str, locais_dict: dict = None) -> bool:
     bruta = linha.strip()
     limpa = remover_acentos(bruta.lower())
     if not limpa:
         return False
     if bruta.startswith("(") or eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";"):
         return False
-    if re.match(r"^\d+", limpa):
+    if re.match(r"^(mercadoria|item|itens|endereco|end\.?|local|entrega|obs)\s*[:\-]", limpa):
         return False
-    if re.match(r"^(pacote|pct)\b", limpa):
+    if re.match(r"^\d+", limpa) or re.match(r"^(pacote|pct)\b", limpa):
+        return False
+    if texto_parece_produto_cadastrado(bruta, locais_dict):
         return False
     return True
 
 
 def separar_componentes_endereco(endereco_bruto: str):
-    end_limpo = re.sub(r"^(endereco|end\.?|local|entrega)\s*[:\-]\s*", "", endereco_bruto.strip(), flags=re.IGNORECASE)
+    end_limpo = str(endereco_bruto).strip()
+    # Remove rótulos como "Endereço:", "End:", "Local:" mesmo com acento ou repetidos
+    end_limpo = re.sub(r"\b(endere[cç]o|end\.?|local|entrega)\s*[:\-]?\s*", " ", end_limpo, flags=re.IGNORECASE).strip()
+    # Remove observações entre parênteses como "(No gps pode apontar...)"
+    end_limpo = re.sub(r"\([^)]*\)", " ", end_limpo)
+    # Normaliza prefixo colado como "AV.PRESIDENTE" -> "Av. Presidente"
+    end_limpo = re.sub(r"^(av|r|al|tv)\.([a-zA-Z])", r"\1. \2", end_limpo, flags=re.IGNORECASE)
+    # Normaliza número com 'n' colado como "n300" ou "nº 300" -> " 300"
+    end_limpo = re.sub(r"\b(?:n[º°.]?\s*)(\d{1,5})\b", r" \1", end_limpo, flags=re.IGNORECASE)
+
+    cep_explicito = ""
+    m_cep = re.search(r"\b(\d{5})-?(\d{3})\b", end_limpo)
+    if m_cep:
+        cep_explicito = f"{m_cep.group(1)}-{m_cep.group(2)}"
+        end_limpo = end_limpo[:m_cep.start()] + " " + end_limpo[m_cep.end():]
 
     bairro_antes_da_rua = ""
     match_meio = re.search(
@@ -521,44 +558,61 @@ def separar_componentes_endereco(endereco_bruto: str):
         flags=re.IGNORECASE
     )
     if match_meio:
-        possivel_bairro_antes = match_meio.group(1).strip(" ,.-")
-        if not remover_acentos(possivel_bairro_antes.lower()).startswith(PREFIXOS_RUA):
+        possivel_bairro_antes = match_meio.group(1).strip(" ,.-:")
+        if possivel_bairro_antes and not remover_acentos(possivel_bairro_antes.lower()).startswith(PREFIXOS_RUA):
             bairro_antes_da_rua = possivel_bairro_antes
             end_limpo = f"{match_meio.group(2)} {match_meio.group(3)}"
 
-    match_num = re.search(r"(?:[,.]\s*|\s+)(\d+)\b(.*)$", end_limpo)
+    match_num = re.search(r"(?:[,.]\s*|\s+)(\d{1,5})\b(.*)$", end_limpo)
     if match_num:
-        rua = end_limpo[:match_num.start()].strip(" ,.-")
+        rua = end_limpo[:match_num.start()].strip(" ,.-:")
         numero = match_num.group(1).strip()
-        resto = match_num.group(2).strip(" ,.-")
+        resto = match_num.group(2).strip(" ,.-:")
     else:
-        rua = end_limpo.strip(" ,.-")
+        rua = end_limpo.strip(" ,.-:")
         numero = ""
         resto = ""
 
+    # Remove complementos de apartamento, bloco, sala, academia, clube, referência
     resto_limpo = re.sub(
         r"\b(ap\.?|apto\.?|apartamento|bl\.?|bloco|casa|sl\.?|sala|lj\.?|loja)\s*\d*[a-zA-Z]?\b",
         " ",
         resto,
         flags=re.IGNORECASE
     )
+    resto_limpo = re.sub(
+        r"\b(clube|academia|condominio|ed\.?|edificio|shopping|supermercado|igreja|escola|hospital)\b.*$",
+        " ",
+        resto_limpo,
+        flags=re.IGNORECASE
+    )
     resto_limpo = re.sub(r"\bbairro\s*[:\-]?\s*", " ", resto_limpo, flags=re.IGNORECASE)
+    resto_limpo = re.sub(r"\bcentro\s+de\s+([a-zA-ZÀ-ÿ\s]+)", r"Centro, \1", resto_limpo, flags=re.IGNORECASE)
+
+    cidade_detectada = detectar_cidade_rmbh(endereco_bruto, f"{bairro_antes_da_rua} {resto_limpo}")
 
     for cid in CIDADES_RMBH:
         resto_limpo = re.sub(rf"\b{cid}\b", " ", resto_limpo, flags=re.IGNORECASE)
         resto_limpo = re.sub(rf"\b{MAPA_NOMES_CIDADES[cid]}\b", " ", resto_limpo, flags=re.IGNORECASE)
 
-    resto_limpo = re.sub(r"\b\d{5}-?\d{3}\b", " ", resto_limpo)
-    resto_limpo = re.sub(r"\s+", " ", resto_limpo).strip(" ,.-/ :")
+    resto_limpo = re.sub(r"\b(mg|minas gerais|brasil)\b", " ", resto_limpo, flags=re.IGNORECASE)
+    for reg in REGIONAIS_BH:
+        resto_limpo = re.sub(rf"\b{re.escape(reg)}\b", " ", resto_limpo, flags=re.IGNORECASE)
 
-    if bairro_antes_da_rua and resto_limpo:
-        bairro_dica = f"{bairro_antes_da_rua}, {resto_limpo}"
+    partes_resto = [p.strip(" ,.-/:") for p in re.split(r"[,/\-]", resto_limpo) if p.strip(" ,.-/:")]
+    bairro_pos = partes_resto[0] if partes_resto else ""
+
+    if bairro_antes_da_rua and bairro_pos:
+        bairro_dica = bairro_antes_da_rua
     elif bairro_antes_da_rua:
         bairro_dica = bairro_antes_da_rua
     else:
-        bairro_dica = resto_limpo
+        bairro_dica = bairro_pos
 
-    cidade_detectada = detectar_cidade_rmbh(endereco_bruto, bairro_dica)
+    # Se a rua não tiver prefixo (ex: "Tamoios", "Galba Veloso", "Dulce Maria"), preserva o nome limpo
+    rua = re.sub(r"\s+", " ", rua).strip(" ,.-:")
+    bairro_dica = re.sub(r"\s+", " ", bairro_dica).strip(" ,.-:")
+
     return rua, numero, bairro_dica, cidade_detectada
 
 
@@ -566,7 +620,87 @@ def dentro_perimetro_rmbh(lat: float, lon: float) -> bool:
     return (-20.40 <= lat <= -19.40) and (-44.60 <= lon <= -43.40)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+def eh_regional_bh(nome_b: str) -> bool:
+    if not nome_b:
+        return False
+    return remover_acentos(nome_b.lower()).strip() in REGIONAIS_BH
+
+
+def formatar_via_com_prefixo(nome_via: str, rua_original_usuario: str = "") -> str:
+    via = str(nome_via).strip()
+    if not via:
+        return ""
+    via_norm = remover_acentos(via.lower())
+    if via_norm.startswith(PREFIXOS_RUA):
+        return via
+    orig_norm = remover_acentos(str(rua_original_usuario).lower()).strip()
+    if orig_norm.startswith(("av ", "av.", "avenida ")):
+        return f"Avenida {via}"
+    if orig_norm.startswith(("al ", "al.", "alameda ")):
+        return f"Alameda {via}"
+    if orig_norm.startswith(("praca ", "praça ")):
+        return f"Praça {via}"
+    if orig_norm.startswith(("tv ", "tv.", "travessa ")):
+        return f"Travessa {via}"
+    return f"Rua {via}"
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def consultar_cep_direto(cep_digitos: str) -> dict:
+    cep_limpo = re.sub(r"\D", "", str(cep_digitos))
+    if len(cep_limpo) != 8:
+        return {}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; RotasRMBH/3.0)"}
+
+    # 1) BrasilAPI (muito rápida em servidores cloud internacionais)
+    try:
+        r = requests.get(f"https://brasilapi.com.br/api/cep/v1/{cep_limpo}", headers=headers, timeout=2.5)
+        if r.status_code == 200:
+            d = r.json()
+            if d.get("street"):
+                return {
+                    "logradouro": d.get("street", ""),
+                    "bairro": d.get("neighborhood", ""),
+                    "localidade": d.get("city", ""),
+                    "cep": f"{cep_limpo[:5]}-{cep_limpo[5:]}"
+                }
+    except Exception:
+        pass
+
+    # 2) OpenCEP
+    try:
+        r2 = requests.get(f"https://opencep.com/v1/{cep_limpo}.json", headers=headers, timeout=2.5)
+        if r2.status_code == 200:
+            d2 = r2.json()
+            if d2.get("logradouro"):
+                return {
+                    "logradouro": d2.get("logradouro", ""),
+                    "bairro": d2.get("bairro", ""),
+                    "localidade": d2.get("localidade", ""),
+                    "cep": d2.get("cep", f"{cep_limpo[:5]}-{cep_limpo[5:]}")
+                }
+    except Exception:
+        pass
+
+    # 3) ViaCEP
+    try:
+        r3 = requests.get(f"https://viacep.com.br/ws/{cep_limpo}/json/", headers=headers, timeout=2.5)
+        if r3.status_code == 200:
+            d3 = r3.json()
+            if not d3.get("erro") and d3.get("logradouro"):
+                return {
+                    "logradouro": d3.get("logradouro", ""),
+                    "bairro": d3.get("bairro", ""),
+                    "localidade": d3.get("localidade", ""),
+                    "cep": d3.get("cep", f"{cep_limpo[:5]}-{cep_limpo[5:]}")
+                }
+    except Exception:
+        pass
+
+    return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     bairro_alvo_norm = remover_acentos(nome_bairro_limpo.lower()).strip()
 
@@ -574,72 +708,7 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
         lat_fixo, lon_fixo, desc_fixa = COORDENADAS_BAIRROS_FIXOS[bairro_alvo_norm]
         return True, desc_fixa, lat_fixo, lon_fixo
 
-    try:
-        q_nom = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
-        url_nom = (
-            f"https://nominatim.openstreetmap.org/search"
-            f"?q={quote(q_nom)}&format=jsonv2&addressdetails=1&limit=10&countrycodes=br"
-        )
-        headers = {"User-Agent": "GeradorRotasRMBH/2.5 (contato@geradorrotas.app)"}
-        resp = requests.get(url_nom, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            resultados = resp.json()
-            for item in resultados:
-                cat = item.get("category", "")
-                tipo = item.get("type", "")
-                end_det = item.get("address", {})
-
-                if cat in ("highway", "amenity", "shop", "tourism", "building"):
-                    continue
-
-                lat_i = float(item["lat"])
-                lon_i = float(item["lon"])
-                if not dentro_perimetro_rmbh(lat_i, lon_i):
-                    continue
-
-                suburb = end_det.get("suburb") or end_det.get("neighbourhood") or end_det.get("quarter") or item.get("name", "")
-                if (
-                    tipo in ("suburb", "neighbourhood", "quarter", "administrative", "city_district", "residential")
-                    and nome_bairro_partida_bate(nome_bairro_limpo, suburb)
-                ):
-                    regional = end_det.get("city_district") or end_det.get("municipality") or ""
-                    cid_item = end_det.get("city") or end_det.get("town") or cidade
-                    cep_item = end_det.get("postcode", "")
-                    detalhe = f"Bairro {suburb}"
-                    if regional and regional.lower() != suburb.lower():
-                        detalhe += f" ({regional})"
-                    detalhe += f", {cid_item}"
-                    if cep_item:
-                        detalhe += f" | CEP: {cep_item}"
-                    return True, detalhe, lat_i, lon_i
-    except Exception:
-        pass
-
-    try:
-        q_photon = f"{nome_bairro_limpo} {cidade} Minas Gerais"
-        url_photon = f"https://photon.komoot.io/api/?q={quote(q_photon)}&lat=-19.9167&lon=-43.9345&limit=12"
-        resp_p = requests.get(url_photon, timeout=5)
-        if resp_p.status_code == 200:
-            features = resp_p.json().get("features", [])
-            for feat in features:
-                props = feat.get("properties", {})
-                osm_key = props.get("osm_key", "")
-                osm_val = props.get("osm_value", "")
-                if osm_key == "highway":
-                    continue
-                coords = feat.get("geometry", {}).get("coordinates", [])
-                if len(coords) == 2:
-                    lon_f, lat_f = float(coords[0]), float(coords[1])
-                    nome_f = props.get("name", "")
-                    if (
-                        dentro_perimetro_rmbh(lat_f, lon_f)
-                        and osm_val in ("suburb", "neighbourhood", "quarter", "district", "locality", "administrative")
-                        and nome_bairro_partida_bate(nome_bairro_limpo, nome_f)
-                    ):
-                        cid_f = props.get("city", cidade)
-                        return True, f"Bairro {nome_f}, {cid_f} - MG", lat_f, lon_f
-    except Exception:
-        pass
+    headers = {"User-Agent": "GeradorRotasRMBH/3.0 (contato@geradorrotas.app)"}
 
     try:
         q_arc = f"Bairro {nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
@@ -649,7 +718,7 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
             f"&searchExtent=-44.50,-20.30,-43.50,-19.50"
             f"&outFields=Addr_type,PlaceName,Nbrhd,City,Postal&maxLocations=10&f=json"
         )
-        resp_a = requests.get(url_arc, timeout=5)
+        resp_a = requests.get(url_arc, headers=headers, timeout=3.5)
         if resp_a.status_code == 200:
             cands = resp_a.json().get("candidates", [])
             for c in cands:
@@ -665,18 +734,61 @@ def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
     except Exception:
         pass
 
+    try:
+        q_photon = f"{nome_bairro_limpo} {cidade} Minas Gerais"
+        url_photon = f"https://photon.komoot.io/api/?q={quote(q_photon)}&lat=-19.9167&lon=-43.9345&limit=10"
+        resp_p = requests.get(url_photon, headers=headers, timeout=3.5)
+        if resp_p.status_code == 200:
+            features = resp_p.json().get("features", [])
+            for feat in features:
+                props = feat.get("properties", {})
+                if props.get("osm_key") == "highway":
+                    continue
+                coords = feat.get("geometry", {}).get("coordinates", [])
+                if len(coords) == 2:
+                    lon_f, lat_f = float(coords[0]), float(coords[1])
+                    nome_f = props.get("name", "")
+                    if dentro_perimetro_rmbh(lat_f, lon_f) and nome_bairro_partida_bate(nome_bairro_limpo, nome_f):
+                        cid_f = props.get("city", cidade)
+                        return True, f"Bairro {nome_f}, {cid_f} - MG", lat_f, lon_f
+    except Exception:
+        pass
+
+    try:
+        q_nom = f"{nome_bairro_limpo}, {cidade}, Minas Gerais, Brasil"
+        url_nom = (
+            f"https://nominatim.openstreetmap.org/search"
+            f"?q={quote(q_nom)}&format=jsonv2&addressdetails=1&limit=8&countrycodes=br"
+        )
+        resp = requests.get(url_nom, headers=headers, timeout=3.5)
+        if resp.status_code == 200:
+            for item in resp.json():
+                if item.get("category") in ("highway", "amenity", "shop", "tourism", "building"):
+                    continue
+                lat_i, lon_i = float(item["lat"]), float(item["lon"])
+                if not dentro_perimetro_rmbh(lat_i, lon_i):
+                    continue
+                end_det = item.get("address", {})
+                suburb = end_det.get("suburb") or end_det.get("neighbourhood") or end_det.get("quarter") or item.get("name", "")
+                if nome_bairro_partida_bate(nome_bairro_limpo, suburb):
+                    cid_item = end_det.get("city") or end_det.get("town") or cidade
+                    return True, f"Bairro {suburb}, {cid_item}", lat_i, lon_i
+    except Exception:
+        pass
+
     return False, "❌ Bairro não localizado em BH/Região. Confira a grafia ou digite uma rua/CEP.", None, None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def geocodificar_endereco_rua(endereco_completo_texto: str):
+    headers = {"User-Agent": "GeradorRotasRMBH/3.0"}
     try:
         q_geo = f"{endereco_completo_texto}, Minas Gerais, Brasil"
         url_arcgis = (
             "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
             f"?SingleLine={quote(q_geo)}&searchExtent=-44.50,-20.30,-43.50,-19.50&maxLocations=1&f=json"
         )
-        resp = requests.get(url_arcgis, timeout=5)
+        resp = requests.get(url_arcgis, headers=headers, timeout=3.5)
         if resp.status_code == 200:
             cands = resp.json().get("candidates", [])
             if cands:
@@ -688,16 +800,14 @@ def geocodificar_endereco_rua(endereco_completo_texto: str):
         pass
 
     try:
-        url_nom = (
-            f"https://nominatim.openstreetmap.org/search"
-            f"?q={quote(endereco_completo_texto + ', Minas Gerais, Brasil')}&format=json&limit=1"
-        )
-        headers = {"User-Agent": "GeradorRotasRMBH/2.5"}
-        resp_n = requests.get(url_nom, headers=headers, timeout=5)
-        if resp_n.status_code == 200:
-            dados = resp_n.json()
-            if dados:
-                return float(dados[0]["lat"]), float(dados[0]["lon"])
+        url_ph = f"https://photon.komoot.io/api/?q={quote(endereco_completo_texto + ' MG')}&lat=-19.9167&lon=-43.9345&limit=1"
+        resp_p = requests.get(url_ph, headers=headers, timeout=3.5)
+        if resp_p.status_code == 200:
+            feats = resp_p.json().get("features", [])
+            if feats:
+                coords = feats[0].get("geometry", {}).get("coordinates", [])
+                if len(coords) == 2 and dentro_perimetro_rmbh(float(coords[1]), float(coords[0])):
+                    return float(coords[1]), float(coords[0])
     except Exception:
         pass
 
@@ -713,6 +823,11 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
         return True
 
     comp = remover_acentos(complemento_viacep.lower())
+    if "lado par" in comp and (num % 2 != 0):
+        return False
+    if "lado impar" in comp and (num % 2 == 0):
+        return False
+
     m_de_a = re.search(r"de\s+(\d+)(?:/\d+)?\s+a\s+(\d+)(?:/\d+)?", comp)
     if m_de_a:
         ini, fim = int(m_de_a.group(1)), int(m_de_a.group(2))
@@ -726,25 +841,31 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
     return True
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def consultar_viacep_com_tolerancia(rua_original: str, rua_sem_prefixo: str, cidade: str) -> list:
-    termos_tentativa = [rua_sem_prefixo]
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; RotasRMBH/3.0)"}
+    termos_tentativa = []
+    if len(rua_sem_prefixo) >= 3:
+        termos_tentativa.append(rua_sem_prefixo)
     tokens = tokens_nucleo_rua(rua_sem_prefixo)
-    for tk in tokens:
+    if len(tokens) >= 2:
+        combinado = f"{tokens[0]} {tokens[-1]}"
+        if len(combinado) >= 4 and combinado not in termos_tentativa:
+            termos_tentativa.append(combinado)
+    for tk in sorted(tokens, key=len, reverse=True):
         if len(tk) >= 4 and tk not in termos_tentativa:
             termos_tentativa.append(tk)
 
-    for termo in termos_tentativa:
-        if len(termo) < 3:
-            continue
+    for termo in termos_tentativa[:3]:
         try:
             url_viacep = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade))}/{quote(remover_acentos(termo))}/json/"
-            resp = requests.get(url_viacep, timeout=4)
+            resp = requests.get(url_viacep, headers=headers, timeout=2.5)
             if resp.status_code == 200:
                 dados = resp.json()
                 if isinstance(dados, list) and len(dados) > 0:
                     filtrados = [
                         d for d in dados
-                        if d.get("logradouro") and similaridade_ruas(rua_original, d.get("logradouro", "")) >= 0.72
+                        if d.get("logradouro") and similaridade_ruas(rua_original, d.get("logradouro", "")) >= 0.68
                     ]
                     if filtrados:
                         return filtrados
@@ -753,33 +874,185 @@ def consultar_viacep_com_tolerancia(rua_original: str, rua_sem_prefixo: str, cid
     return []
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
+def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade: str):
+    """
+    Busca candidatos de endereço em ArcGIS, Photon e Nominatim para garantir:
+    1) Reconhecimento mesmo quando ViaCEP falha ou para ruas curtas ('Rua H');
+    2) Detecção do bairro real (e não Regional 'Centro-Sul'/'Noroeste');
+    3) Lista de opções de bairros quando a rua existe em mais de um bairro na RMBH.
+    """
+    headers = {"User-Agent": "GeradorRotasRMBH/3.0 (contato@geradorrotas.app)"}
+    candidatos = []
+    rua_Com_pref = formatar_via_com_prefixo(rua, rua)
+
+    # 1) ArcGIS com todos os campos (StPreType, StName, StType, Nbrhd, District, City, Postal)
+    try:
+        q_arc = f"{rua_Com_pref}, {numero}, {bairro_dica}, {cidade}, Minas Gerais, Brasil".replace(", ,", ",")
+        url_arc = (
+            "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
+            f"?SingleLine={quote(q_arc)}&searchExtent=-44.50,-20.30,-43.50,-19.50"
+            f"&outFields=StPreType,StName,StType,AddNum,Nbrhd,District,City,Postal,Match_addr&maxLocations=10&f=json"
+        )
+        r_arc = requests.get(url_arc, headers=headers, timeout=3.0)
+        if r_arc.status_code == 200:
+            for c in r_arc.json().get("candidates", []):
+                if c.get("score", 0) < 72:
+                    continue
+                lat_c = float(c["location"]["y"])
+                lon_c = float(c["location"]["x"])
+                if not dentro_perimetro_rmbh(lat_c, lon_c):
+                    continue
+                at = c.get("attributes", {})
+                pre = at.get("StPreType", "").strip()
+                nm = at.get("StName", "").strip()
+                suf = at.get("StType", "").strip()
+                partes_v = [p for p in (pre, nm, suf) if p]
+                via_arc = " ".join(partes_v).strip()
+                if not via_arc:
+                    continue
+                if similaridade_ruas(rua, via_arc) < 0.68:
+                    continue
+
+                via_arc = formatar_via_com_prefixo(via_arc, rua)
+                nbr = (at.get("Nbrhd") or "").strip()
+                dist = (at.get("District") or "").strip()
+                bairro_c = nbr if (nbr and not eh_regional_bh(nbr)) else (dist if not eh_regional_bh(dist) else "")
+                cid_c = (at.get("City") or cidade).strip()
+                cep_raw = re.sub(r"\D", "", str(at.get("Postal", "")))
+                cep_c = f"{cep_raw[:5]}-{cep_raw[5:]}" if len(cep_raw) == 8 else ""
+
+                candidatos.append({
+                    "logradouro": via_arc,
+                    "bairro": bairro_c,
+                    "cidade": cid_c,
+                    "cep": cep_c,
+                    "lat": lat_c,
+                    "lon": lon_c,
+                    "fonte": "arcgis"
+                })
+    except Exception:
+        pass
+
+    # 2) Photon (OpenStreetMap) - excelente para achar todos os bairros reais em BH/Contagem/Nova Lima
+    try:
+        q_ph = f"{rua_Com_pref} {numero} {bairro_dica} {cidade} MG".strip()
+        url_ph = f"https://photon.komoot.io/api/?q={quote(q_ph)}&lat=-19.9167&lon=-43.9345&limit=10"
+        r_ph = requests.get(url_ph, headers=headers, timeout=3.0)
+        if r_ph.status_code == 200:
+            for feat in r_ph.json().get("features", []):
+                props = feat.get("properties", {})
+                coords = feat.get("geometry", {}).get("coordinates", [])
+                rua_ph = props.get("street") or props.get("name") or ""
+                if len(coords) == 2 and rua_ph and similaridade_ruas(rua, rua_ph) >= 0.68:
+                    lon_p, lat_p = float(coords[0]), float(coords[1])
+                    if not dentro_perimetro_rmbh(lat_p, lon_p):
+                        continue
+                    b_ph = props.get("suburb") or props.get("district") or props.get("locality") or ""
+                    if eh_regional_bh(b_ph):
+                        b_ph = ""
+                    cid_ph = props.get("city") or props.get("town") or cidade
+                    cep_raw = re.sub(r"\D", "", str(props.get("postcode", "")))
+                    cep_ph = f"{cep_raw[:5]}-{cep_raw[5:]}" if len(cep_raw) == 8 else ""
+                    candidatos.append({
+                        "logradouro": formatar_via_com_prefixo(rua_ph, rua),
+                        "bairro": b_ph,
+                        "cidade": cid_ph,
+                        "cep": cep_ph,
+                        "lat": lat_p,
+                        "lon": lon_p,
+                        "fonte": "photon"
+                    })
+    except Exception:
+        pass
+
+    # 3) Se não tinha bairro informado ou ainda faltou bairro real, consulta Nominatim para listar bairros homônimos
+    precisa_nominatim = (not bairro_dica) or all(not c.get("bairro") for c in candidatos)
+    if precisa_nominatim:
+        try:
+            q_nom = f"{rua_Com_pref}, {cidade}, Minas Gerais, Brasil"
+            url_nom = (
+                f"https://nominatim.openstreetmap.org/search"
+                f"?q={quote(q_nom)}&format=jsonv2&addressdetails=1&limit=10&countrycodes=br"
+            )
+            r_nom = requests.get(url_nom, headers=headers, timeout=3.0)
+            if r_nom.status_code == 200:
+                for item in r_nom.json():
+                    lat_n, lon_n = float(item["lat"]), float(item["lon"])
+                    if not dentro_perimetro_rmbh(lat_n, lon_n):
+                        continue
+                    ed = item.get("address", {})
+                    via_n = ed.get("road") or item.get("name") or ""
+                    if not via_n or similaridade_ruas(rua, via_n) < 0.68:
+                        continue
+                    b_n = ed.get("suburb") or ed.get("neighbourhood") or ed.get("quarter") or ""
+                    if eh_regional_bh(b_n):
+                        b_n = ""
+                    cid_n = ed.get("city") or ed.get("town") or ed.get("municipality") or cidade
+                    cep_raw = re.sub(r"\D", "", str(ed.get("postcode", "")))
+                    cep_n = f"{cep_raw[:5]}-{cep_raw[5:]}" if len(cep_raw) == 8 else ""
+                    candidatos.append({
+                        "logradouro": formatar_via_com_prefixo(via_n, rua),
+                        "bairro": b_n,
+                        "cidade": cid_n,
+                        "cep": cep_n,
+                        "lat": lat_n,
+                        "lon": lon_n,
+                        "fonte": "nominatim"
+                    })
+        except Exception:
+            pass
+
+    return candidatos
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def buscar_endereco_completo(endereco_bruto: str):
     if not str(endereco_bruto).strip():
         return "", "❌ NÃO ENCONTRADO - CORRIGIR", None, None, []
 
+    # Se já possuir CEP explícito no texto, valida direto
+    m_cep_texto = re.search(r"\b(\d{5})-?(\d{3})\b", str(endereco_bruto))
+    cep_pre_informado = f"{m_cep_texto.group(1)}-{m_cep_texto.group(2)}" if m_cep_texto else ""
+
     rua, numero, bairro_dica, cidade = separar_componentes_endereco(str(endereco_bruto))
     rua_sem_prefixo = re.sub(
-        r"^(rua|r\.|r|avenida|av\.|av|alameda|al\.|praca|praça|travessa|tv\.|beco)\s+",
+        r"^(rua|r\.|r|avenida|av\.|av|alameda|al\.|praca|praça|travessa|tv\.|beco)\s*",
         "",
         rua,
         flags=re.IGNORECASE
     ).strip()
 
-    cep_encontrado = ""
+    cep_encontrado = cep_pre_informado
     logradouro_oficial = ""
     bairro_oficial = ""
     cidade_oficial = cidade
     lat, lon = None, None
-    opcoes_bairros = []
+    mapa_bairros_opcoes = {}
 
+    def registrar_opcao_bairro(logr_op, bair_op, cid_op, cep_op):
+        b_limpo = str(bair_op).strip()
+        if not b_limpo or eh_regional_bh(b_limpo):
+            return
+        chave_b = remover_acentos(f"{b_limpo}_{cid_op}".lower())
+        if chave_b not in mapa_bairros_opcoes:
+            partes_op = [formatar_via_com_prefixo(logr_op, rua)]
+            if numero:
+                partes_op.append(numero)
+            partes_op.append(b_limpo)
+            partes_op.append(cid_op)
+            if cep_op:
+                partes_op.append(cep_op)
+            mapa_bairros_opcoes[chave_b] = ", ".join(partes_op)
+
+    # 1) Tenta ViaCEP
     cidades_para_testar = [cidade]
     if bairro_dica:
-        for cid_extra in ["Nova Lima", "Contagem", "Belo Horizonte", "Sabará", "Santa Luzia", "Betim"]:
+        for cid_extra in ["Contagem", "Nova Lima", "Belo Horizonte", "Ribeirão das Neves", "Sabará", "Betim", "Santa Luzia"]:
             if cid_extra not in cidades_para_testar:
                 cidades_para_testar.append(cid_extra)
 
-    if len(rua_sem_prefixo) >= 3:
+    if len(rua_sem_prefixo) >= 2:
         for cid_teste in cidades_para_testar:
             dados_viacep = consultar_viacep_com_tolerancia(rua, rua_sem_prefixo, cid_teste)
             if not dados_viacep:
@@ -795,143 +1068,92 @@ def buscar_endereco_completo(endereco_bruto: str):
             def nota_candidato_viacep(item):
                 s_rua = similaridade_ruas(rua, item.get("logradouro", ""))
                 s_bairro = similaridade_bairros(bairro_dica, item.get("bairro", "")) if bairro_dica else 0.0
-                return (s_bairro >= 0.78, s_rua + (s_bairro * 0.3))
+                return (s_bairro >= 0.72, s_rua + (s_bairro * 0.35))
 
             candidatos_faixa.sort(key=nota_candidato_viacep, reverse=True)
 
-            bateu_bairro_dica = []
-            if bairro_dica:
-                for item in candidatos_faixa:
-                    if similaridade_bairros(bairro_dica, item.get("bairro", "")) >= 0.78:
-                        bateu_bairro_dica.append(item)
+            for item in candidatos_faixa:
+                registrar_opcao_bairro(
+                    item.get("logradouro") or rua,
+                    item.get("bairro", ""),
+                    item.get("localidade") or cid_teste,
+                    item.get("cep", "")
+                )
+
+            bateu_bairro_dica = [
+                item for item in candidatos_faixa
+                if bairro_dica and similaridade_bairros(bairro_dica, item.get("bairro", "")) >= 0.72
+            ]
 
             if bateu_bairro_dica:
                 escolhido = bateu_bairro_dica[0]
+                mapa_bairros_opcoes.clear()  # Bairro já foi confirmado!
             elif bairro_dica and cid_teste != cidade:
                 continue
             else:
                 escolhido = candidatos_faixa[0] if candidatos_faixa else dados_viacep[0]
 
-                if not bairro_dica:
-                    mapa_bairros_unicos = {}
-                    for item in candidatos_faixa:
-                        b_nome = item.get("bairro", "").strip()
-                        if b_nome and b_nome not in mapa_bairros_unicos:
-                            logr_i = item.get("logradouro") or rua.title()
-                            cid_i = item.get("localidade") or cid_teste
-                            cep_i = item.get("cep", "")
-                            partes_op = [logr_i]
-                            if numero:
-                                partes_op.append(numero)
-                            partes_op.append(b_nome)
-                            partes_op.append(cid_i)
-                            if cep_i:
-                                partes_op.append(cep_i)
-                            mapa_bairros_unicos[b_nome] = ", ".join(partes_op)
-
-                    if len(mapa_bairros_unicos) > 1:
-                        opcoes_bairros = list(mapa_bairros_unicos.values())
-
-            logradouro_oficial = escolhido.get("logradouro", "")
+            logradouro_oficial = formatar_via_com_prefixo(escolhido.get("logradouro", ""), rua)
             bairro_oficial = escolhido.get("bairro", "")
             cidade_oficial = escolhido.get("localidade", cid_teste)
-            cep_encontrado = escolhido.get("cep", "")
+            cep_encontrado = escolhido.get("cep", "") or cep_encontrado
             break
 
-    rua_busca = logradouro_oficial if logradouro_oficial else rua
-    bairro_busca = bairro_oficial if bairro_oficial else bairro_dica
-    try:
-        query_geo = f"{rua_busca}, {numero}, {bairro_busca}, {cidade_oficial}, Minas Gerais, Brasil"
-        url_arcgis = (
-            "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
-            f"?SingleLine={quote(query_geo)}&searchExtent=-44.50,-20.30,-43.50,-19.50"
-            f"&outFields=StName,StType,AddNum,Nbrhd,City,Postal&maxLocations=5&f=json"
-        )
-        resp_geo = requests.get(url_arcgis, timeout=5)
-        if resp_geo.status_code == 200:
-            cands = resp_geo.json().get("candidates", [])
-            for cand in cands:
-                if cand.get("score", 0) < 75:
-                    continue
-                lat_cand = float(cand["location"]["y"])
-                lon_cand = float(cand["location"]["x"])
-                if not dentro_perimetro_rmbh(lat_cand, lon_cand):
-                    continue
+    # 2) Busca Multifonte (ArcGIS + Photon + Nominatim)
+    candidatos_geo = buscar_candidatos_multifonte(
+        logradouro_oficial if logradouro_oficial else rua,
+        numero,
+        bairro_oficial if bairro_oficial else bairro_dica,
+        cidade_oficial
+    )
 
-                atrib = cand.get("attributes", {})
-                st_type = atrib.get("StType", "")
-                st_name = atrib.get("StName", "")
-                rua_arcgis = f"{st_type} {st_name}".strip()
+    if candidatos_geo:
+        # Se o usuário informou bairro, prioriza candidato que bata com o bairro ou usa o bairro informado
+        for cg in candidatos_geo:
+            if not bairro_dica and cg.get("bairro"):
+                registrar_opcao_bairro(
+                    cg["logradouro"],
+                    cg["bairro"],
+                    cg["cidade"],
+                    cg.get("cep") or cep_encontrado
+                )
 
-                if logradouro_oficial:
-                    if not rua_arcgis or similaridade_ruas(logradouro_oficial, rua_arcgis) >= 0.68:
-                        lat, lon = lat_cand, lon_cand
-                        break
-                else:
-                    if rua_arcgis and similaridade_ruas(rua, rua_arcgis) >= 0.72:
-                        nbr_arc = atrib.get("Nbrhd", "")
-                        if bairro_dica and nbr_arc and similaridade_bairros(bairro_dica, nbr_arc) < 0.60:
-                            continue
-                        lat, lon = lat_cand, lon_cand
-                        logradouro_oficial = rua_arcgis
-                        if not bairro_oficial and nbr_arc:
-                            bairro_oficial = nbr_arc
-                        if atrib.get("City"):
-                            cidade_oficial = atrib.get("City")
-                        if not cep_encontrado and atrib.get("Postal"):
-                            cep_raw = re.sub(r"\D", "", atrib.get("Postal", ""))
-                            if len(cep_raw) == 8:
-                                cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
-                        break
-    except Exception:
-        pass
+        melhor_cg = candidatos_geo[0]
+        if bairro_dica:
+            for cg in candidatos_geo:
+                if cg.get("bairro") and similaridade_bairros(bairro_dica, cg["bairro"]) >= 0.70:
+                    melhor_cg = cg
+                    break
 
-    if cep_encontrado and not opcoes_bairros:
-        cep_digitos = re.sub(r"\D", "", cep_encontrado)
-        if len(cep_digitos) == 8:
-            try:
-                resp_cep_direto = requests.get(f"https://viacep.com.br/ws/{cep_digitos}/json/", timeout=4)
-                if resp_cep_direto.status_code == 200:
-                    d_cep = resp_cep_direto.json()
-                    if not d_cep.get("erro"):
-                        logr_cep = d_cep.get("logradouro", "")
-                        if logr_cep and similaridade_ruas(rua, logr_cep) >= 0.72:
-                            logradouro_oficial = logr_cep
-                            bairro_oficial = d_cep.get("bairro") or bairro_oficial
-                            cidade_oficial = d_cep.get("localidade") or cidade_oficial
-                            cep_encontrado = d_cep.get("cep") or cep_encontrado
-                        elif not logradouro_oficial:
-                            cep_encontrado = ""
-            except Exception:
-                pass
+        lat, lon = melhor_cg["lat"], melhor_cg["lon"]
+        if not logradouro_oficial:
+            logradouro_oficial = melhor_cg["logradouro"]
+        if not cep_encontrado and melhor_cg.get("cep"):
+            cep_encontrado = melhor_cg["cep"]
+        if not bairro_oficial:
+            if melhor_cg.get("bairro") and (not bairro_dica or similaridade_bairros(bairro_dica, melhor_cg["bairro"]) >= 0.65):
+                bairro_oficial = melhor_cg["bairro"]
+            elif bairro_dica:
+                bairro_oficial = bairro_dica.title()
+            elif melhor_cg.get("bairro"):
+                bairro_oficial = melhor_cg["bairro"]
+        if melhor_cg.get("cidade"):
+            cidade_oficial = melhor_cg["cidade"]
+
+    # 3) Se temos CEP (do ArcGIS/Photon/Texto), enriquece via BrasilAPI/OpenCEP/ViaCEP para ter o Bairro Oficial exato!
+    if cep_encontrado:
+        dados_cep = consultar_cep_direto(cep_encontrado)
+        if dados_cep and dados_cep.get("logradouro"):
+            if similaridade_ruas(rua, dados_cep["logradouro"]) >= 0.65 or not logradouro_oficial:
+                logradouro_oficial = formatar_via_com_prefixo(dados_cep["logradouro"], rua)
+                if dados_cep.get("bairro") and not eh_regional_bh(dados_cep["bairro"]):
+                    bairro_oficial = dados_cep["bairro"]
+                if dados_cep.get("localidade"):
+                    cidade_oficial = dados_cep["localidade"]
+                cep_encontrado = dados_cep.get("cep", cep_encontrado)
 
     if not logradouro_oficial:
-        try:
-            q_ph = f"{rua} {numero} {bairro_dica} {cidade_oficial} MG"
-            url_ph = f"https://photon.komoot.io/api/?q={quote(q_ph)}&lat=-19.9167&lon=-43.9345&limit=6"
-            resp_ph = requests.get(url_ph, timeout=4)
-            if resp_ph.status_code == 200:
-                for feat in resp_ph.json().get("features", []):
-                    props = feat.get("properties", {})
-                    coords = feat.get("geometry", {}).get("coordinates", [])
-                    rua_ph = props.get("street") or props.get("name") or ""
-                    if len(coords) == 2 and rua_ph and similaridade_ruas(rua, rua_ph) >= 0.72:
-                        lon_p, lat_p = float(coords[0]), float(coords[1])
-                        if dentro_perimetro_rmbh(lat_p, lon_p):
-                            logradouro_oficial = rua_ph
-                            bairro_oficial = bairro_oficial or props.get("district") or props.get("suburb") or ""
-                            cidade_oficial = props.get("city") or cidade_oficial
-                            if not cep_encontrado and props.get("postcode"):
-                                cep_raw = re.sub(r"\D", "", str(props.get("postcode")))
-                                if len(cep_raw) == 8:
-                                    cep_encontrado = f"{cep_raw[:5]}-{cep_raw[5:]}"
-                            lat, lon = lat_p, lon_p
-                            break
-        except Exception:
-            pass
-
-    if not logradouro_oficial:
-        partes_orig = [rua.title()]
+        partes_orig = [formatar_via_com_prefixo(rua.title(), rua)]
         if numero:
             partes_orig.append(numero)
         if bairro_dica:
@@ -945,8 +1167,13 @@ def buscar_endereco_completo(endereco_bruto: str):
                 lat, lon = lat_b, lon_b
         return end_mantido, "❌ RUA NÃO CONFIRMADA - CONFERIR", lat, lon, []
 
-    nome_via_final = logradouro_oficial
-    bairro_final = bairro_oficial if bairro_oficial else (bairro_dica.title() if bairro_dica else "Bairro não identificado")
+    nome_via_final = formatar_via_com_prefixo(logradouro_oficial, rua)
+    if bairro_oficial and not eh_regional_bh(bairro_oficial):
+        bairro_final = bairro_oficial
+    elif bairro_dica and not eh_regional_bh(bairro_dica):
+        bairro_final = bairro_dica.title()
+    else:
+        bairro_final = "Bairro não identificado"
 
     partes_end = [nome_via_final]
     if numero:
@@ -962,9 +1189,11 @@ def buscar_endereco_completo(endereco_bruto: str):
     if lat is None or lon is None:
         lat, lon = geocodificar_endereco_rua(endereco_padronizado)
 
+    opcoes_bairros = list(mapa_bairros_opcoes.values()) if (not bairro_dica and len(mapa_bairros_opcoes) > 1) else []
+
     if len(opcoes_bairros) > 1:
         status = f"⚠️ {len(opcoes_bairros)} BAIRROS ENCONTRADOS (ESCOLHER)"
-    elif not cep_encontrado or bairro_final == "Bairro não identificado":
+    elif bairro_final == "Bairro não identificado":
         status = "⚠️ INCOMPLETO (CONFERIR BAIRRO/CEP)"
     else:
         status = "✅ OK"
@@ -972,7 +1201,7 @@ def buscar_endereco_completo(endereco_bruto: str):
     return endereco_padronizado, status, lat, lon, opcoes_bairros
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def validar_e_geocodificar_partida(texto_partida: str):
     bruto = str(texto_partida).strip()
     if not bruto:
@@ -980,20 +1209,15 @@ def validar_e_geocodificar_partida(texto_partida: str):
 
     apenas_digitos = re.sub(r"\D", "", bruto)
     if len(apenas_digitos) == 8:
-        try:
-            resp_cep = requests.get(f"https://viacep.com.br/ws/{apenas_digitos}/json/", timeout=5)
-            if resp_cep.status_code == 200:
-                d_cep = resp_cep.json()
-                if not d_cep.get("erro"):
-                    logr = d_cep.get("logradouro", "")
-                    bair = d_cep.get("bairro", "")
-                    cid = d_cep.get("localidade", "Belo Horizonte")
-                    cep_f = d_cep.get("cep", bruto)
-                    desc = f"{logr}, {bair}, {cid} ({cep_f})".strip(" ,")
-                    lat, lon = geocodificar_endereco_rua(desc)
-                    return True, f"CEP localizado: {desc}", lat, lon
-        except Exception:
-            pass
+        d_cep = consultar_cep_direto(apenas_digitos)
+        if d_cep:
+            logr = d_cep.get("logradouro", "")
+            bair = d_cep.get("bairro", "")
+            cid = d_cep.get("localidade", "Belo Horizonte")
+            cep_f = d_cep.get("cep", bruto)
+            desc = f"{logr}, {bair}, {cid} ({cep_f})".strip(" ,")
+            lat, lon = geocodificar_endereco_rua(desc)
+            return True, f"CEP localizado: {desc}", lat, lon
 
     texto_norm = remover_acentos(bruto.lower())
     tem_prefixo_rua = texto_norm.startswith(PREFIXOS_RUA)
@@ -1027,62 +1251,114 @@ def validar_e_geocodificar_partida(texto_partida: str):
     return False, desc_b, None, None
 
 
-def processar_bloco_unico_pedido(linhas_bloco: list, locais_dict: dict, vendedor_padrao: str = ""):
-    nome_cliente = None
-    itens_pedido = []
+def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedor_padrao: str = "") -> list:
+    """
+    Extrai cliente(s), itens e endereço de um bloco de mensagem.
+    Se uma mesma mensagem tiver um único endereço e múltiplos clientes (ex: Vinicius, Ryan, Ana Clara),
+    divide automaticamente mantendo o endereço para cada um.
+    """
     linhas_endereco = []
+    outras_linhas = []
 
     for linha in linhas_bloco:
         l_strip = linha.strip()
         if not l_strip or eh_subtitulo_ou_divisoria(l_strip):
             continue
 
+        # Se a linha começa com "Mercadoria:" ou "Itens:", limpa o rótulo e força como item
+        if re.match(r"^(mercadoria|itens?|produtos?)\s*[:\-]", remover_acentos(l_strip.lower())):
+            item_limpo = re.sub(r"^(mercadoria|itens?|produtos?)\s*[:\-]\s*", "", l_strip, flags=re.IGNORECASE).strip()
+            if item_limpo:
+                outras_linhas.append(("ITEM", item_limpo))
+            continue
+
+        if re.match(r"^(cliente|nome|pedido|ped)\s*[:\-]", remover_acentos(l_strip.lower())):
+            outras_linhas.append(("NOME", limpar_nome_cliente(l_strip)))
+            continue
+
         if eh_linha_endereco(l_strip, locais_dict):
             linhas_endereco.append(l_strip)
-        elif eh_complemento_pos_endereco(l_strip) and linhas_endereco:
+        elif linhas_endereco and eh_complemento_pos_endereco(l_strip, locais_dict):
             linhas_endereco[-1] = f"{linhas_endereco[-1]}, {l_strip}"
         elif eh_linha_produto_clara(l_strip, locais_dict):
-            itens_pedido.append(l_strip)
-        elif nome_cliente is None and pode_ser_nome_cliente(l_strip):
-            nome_cliente = limpar_nome_cliente(l_strip)
+            outras_linhas.append(("ITEM", l_strip))
+        elif pode_ser_nome_cliente(l_strip, locais_dict):
+            outras_linhas.append(("NOME", limpar_nome_cliente(l_strip)))
         else:
-            itens_pedido.append(l_strip)
+            outras_linhas.append(("ITEM", l_strip))
 
-    if not nome_cliente or not linhas_endereco:
-        return None
+    if not linhas_endereco:
+        return []
 
     endereco_bruto_final = ", ".join(linhas_endereco)
-    qtd_pct, locais_detectados = identificar_locais_dos_itens(itens_pedido, locais_dict)
-    end_completo, status, lat, lon, opcoes_amb = buscar_endereco_completo(endereco_bruto_final)
 
-    resumo_itens = ", ".join(itens_pedido)
-    if locais_detectados:
-        resumo_itens += f" ➔ [{', '.join(locais_detectados)}]"
+    # Agrupa por cliente caso haja mais de um cliente para o mesmo endereço no bloco
+    sub_pedidos = []
+    cliente_atual = None
+    itens_atuais = []
 
-    return {
-        "Excluir": False,
-        "Status": status,
-        "Cliente": nome_cliente,
-        "Vendedor": vendedor_padrao.upper().strip(),
-        "Pacotes": qtd_pct,
-        "Observacao": "",
-        "Posicao": "Normal",
-        "Endereco": end_completo,
-        "Itens_Lidos": resumo_itens,
-        "Lat": lat,
-        "Lon": lon,
-        "Opcoes_Endereco": json.dumps(opcoes_amb, ensure_ascii=False)
-    }
+    for tipo, valor in outras_linhas:
+        if tipo == "NOME":
+            if cliente_atual and itens_atuais:
+                sub_pedidos.append((cliente_atual, itens_atuais))
+                cliente_atual = valor
+                itens_atuais = []
+            elif cliente_atual is None:
+                cliente_atual = valor
+            else:
+                # Dois nomes seguidos sem itens entre eles: mantém o primeiro
+                pass
+        else:
+            itens_atuais.append(valor)
+
+    if cliente_atual:
+        sub_pedidos.append((cliente_atual, itens_atuais))
+    elif itens_atuais:
+        sub_pedidos.append(("CLIENTE", itens_atuais))
+
+    pre_pedidos = []
+    for nome_cli, lista_it in sub_pedidos:
+        qtd_pct, locais_detectados = identificar_locais_dos_itens(lista_it, locais_dict)
+        resumo_itens = ", ".join(lista_it)
+        if locais_detectados:
+            resumo_itens += f" ➔ [{', '.join(locais_detectados)}]"
+        pre_pedidos.append({
+            "Cliente": nome_cli,
+            "Vendedor": vendedor_padrao.upper().strip(),
+            "Pacotes": qtd_pct,
+            "Itens_Lidos": resumo_itens,
+            "Endereco_Bruto": endereco_bruto_final
+        })
+
+    return pre_pedidos
+
+
+def resolver_enderecos_em_paralelo(lista_enderecos_brutos: list) -> dict:
+    """Executa buscar_endereco_completo em paralelo (até 12 threads) para carregar 35+ pedidos em ~3 segundos."""
+    unicos = list(dict.fromkeys([e for e in lista_enderecos_brutos if str(e).strip()]))
+    resultados = {}
+    if not unicos:
+        return resultados
+
+    max_workers = min(12, len(unicos))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futuros = {executor.submit(buscar_endereco_completo, end_b): end_b for end_b in unicos}
+        for fut in as_completed(futuros):
+            end_b = futuros[fut]
+            try:
+                resultados[end_b] = fut.result()
+            except Exception:
+                resultados[end_b] = (end_b, "❌ ERRO NA BUSCA - CONFERIR", None, None, [])
+    return resultados
 
 
 def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
     linhas_originais = texto_bruto.splitlines()
     tem_cabecalho_chat = any(REGEX_CABECALHO_CHAT.match(l) for l in linhas_originais if l.strip())
 
-    pedidos = []
+    blocos = []
 
     if tem_cabecalho_chat:
-        blocos = []
         bloco_atual = []
         for l in linhas_originais:
             m_chat = REGEX_CABECALHO_CHAT.match(l)
@@ -1096,66 +1372,77 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
                     bloco_atual.append(l.strip())
         if bloco_atual:
             blocos.append(bloco_atual)
-
-        for b in blocos:
-            ped = processar_bloco_unico_pedido(b, locais_dict, vendedor_padrao)
-            if ped:
-                pedidos.append(ped)
-        return pd.DataFrame(pedidos)
-
-    linhas_cruas = [l.strip() for l in linhas_originais if l.strip()]
-    blocos = []
-    bloco_atual = []
-    ja_tem_endereco_no_bloco = False
-
-    i = 0
-    n = len(linhas_cruas)
-    while i < n:
-        linha = linhas_cruas[i]
-
-        if eh_subtitulo_ou_divisoria(linha):
-            i += 1
-            continue
-
-        if not bloco_atual:
-            bloco_atual.append(linha)
-            ja_tem_endereco_no_bloco = eh_linha_endereco(linha, locais_dict)
-            i += 1
-            continue
-
-        if eh_linha_endereco(linha, locais_dict):
-            bloco_atual.append(linha)
-            ja_tem_endereco_no_bloco = True
-            while (i + 1) < n and eh_complemento_pos_endereco(linhas_cruas[i + 1]):
-                bloco_atual.append(linhas_cruas[i + 1])
+    else:
+        linhas_cruas = [l.strip() for l in linhas_originais if l.strip()]
+        bloco_atual = []
+        ja_tem_endereco_no_bloco = False
+        i = 0
+        n = len(linhas_cruas)
+        while i < n:
+            linha = linhas_cruas[i]
+            if eh_subtitulo_ou_divisoria(linha):
                 i += 1
-            i += 1
-            continue
-
-        if ja_tem_endereco_no_bloco:
-            if eh_linha_produto_clara(linha, locais_dict):
+                continue
+            if not bloco_atual:
                 bloco_atual.append(linha)
+                ja_tem_endereco_no_bloco = eh_linha_endereco(linha, locais_dict)
                 i += 1
                 continue
-            else:
-                blocos.append(bloco_atual)
-                bloco_atual = [linha]
-                ja_tem_endereco_no_bloco = False
+            if eh_linha_endereco(linha, locais_dict):
+                bloco_atual.append(linha)
+                ja_tem_endereco_no_bloco = True
+                while (i + 1) < n and eh_complemento_pos_endereco(linhas_cruas[i + 1], locais_dict):
+                    bloco_atual.append(linhas_cruas[i + 1])
+                    i += 1
                 i += 1
                 continue
+            if ja_tem_endereco_no_bloco:
+                if eh_linha_produto_clara(linha, locais_dict):
+                    bloco_atual.append(linha)
+                    i += 1
+                    continue
+                else:
+                    blocos.append(bloco_atual)
+                    bloco_atual = [linha]
+                    ja_tem_endereco_no_bloco = False
+                    i += 1
+                    continue
+            bloco_atual.append(linha)
+            i += 1
+        if bloco_atual:
+            blocos.append(bloco_atual)
 
-        bloco_atual.append(linha)
-        i += 1
-
-    if bloco_atual:
-        blocos.append(bloco_atual)
-
+    pre_pedidos = []
     for b in blocos:
-        ped = processar_bloco_unico_pedido(b, locais_dict, vendedor_padrao)
-        if ped:
-            pedidos.append(ped)
+        pre_pedidos.extend(extrair_dados_brutos_do_bloco(b, locais_dict, vendedor_padrao))
 
-    return pd.DataFrame(pedidos)
+    if not pre_pedidos:
+        return pd.DataFrame()
+
+    mapa_resolvidos = resolver_enderecos_em_paralelo([p["Endereco_Bruto"] for p in pre_pedidos])
+
+    pedidos_finais = []
+    for p in pre_pedidos:
+        end_completo, status, lat, lon, opcoes_amb = mapa_resolvidos.get(
+            p["Endereco_Bruto"],
+            (p["Endereco_Bruto"], "❌ RUA NÃO CONFIRMADA - CONFERIR", None, None, [])
+        )
+        pedidos_finais.append({
+            "Excluir": False,
+            "Status": status,
+            "Cliente": p["Cliente"],
+            "Vendedor": p["Vendedor"],
+            "Pacotes": p["Pacotes"],
+            "Observacao": "",
+            "Posicao": "Normal",
+            "Endereco": end_completo,
+            "Itens_Lidos": p["Itens_Lidos"],
+            "Lat": lat,
+            "Lon": lon,
+            "Opcoes_Endereco": json.dumps(opcoes_amb, ensure_ascii=False)
+        })
+
+    return pd.DataFrame(pedidos_finais)
 
 
 def chave_duplicidade(cliente: str, endereco: str) -> tuple:
@@ -2035,21 +2322,39 @@ if st.session_state["modulo_ativo"] == "rotas":
 
             col_acao1, col_acao2, col_acao3 = st.columns(3)
 
-            with col_acao1:
+with col_acao1:
                 if st.button(
                     "🔍 Buscar CEP após Editar Tabela",
                     use_container_width=True,
-                    help="Use caso tenha alterado endereços na tabela e queira rebuscar o CEP e Bairro oficial."
+                    help="Rebusca rapidamente apenas os endereços que você editou ou que estavam com aviso."
                 ):
-                    with st.spinner("Buscando CEP e Bairro dos endereços..."):
+                    with st.spinner("Atualizando endereços editados/pendentes em paralelo..."):
                         df_atualizados = df_editado.copy()
+                        indices_para_buscar = []
+                        enderecos_para_buscar = []
+
                         for idx, row in df_atualizados.iterrows():
-                            end_novo, novo_status, lat, lon, novas_opcoes = buscar_endereco_completo(row["Endereco"])
-                            df_atualizados.at[idx, "Endereco"] = end_novo
-                            df_atualizados.at[idx, "Status"] = novo_status
-                            df_atualizados.at[idx, "Lat"] = lat
-                            df_atualizados.at[idx, "Lon"] = lon
-                            df_atualizados.at[idx, "Opcoes_Endereco"] = json.dumps(novas_opcoes, ensure_ascii=False)
+                            end_antigo = str(df_base.at[idx, "Endereco"]) if idx in df_base.index else ""
+                            end_atual = str(row["Endereco"])
+                            status_atual = str(row["Status"])
+                            if end_atual != end_antigo or status_atual != "✅ OK":
+                                indices_para_buscar.append(idx)
+                                enderecos_para_buscar.append(end_atual)
+
+                        if enderecos_para_buscar:
+                            mapa_novos = resolver_enderecos_em_paralelo(enderecos_para_buscar)
+                            for idx in indices_para_buscar:
+                                end_atual = str(df_atualizados.at[idx, "Endereco"])
+                                end_novo, novo_status, lat, lon, novas_opcoes = mapa_novos.get(
+                                    end_atual,
+                                    buscar_endereco_completo(end_atual)
+                                )
+                                df_atualizados.at[idx, "Endereco"] = end_novo
+                                df_atualizados.at[idx, "Status"] = novo_status
+                                df_atualizados.at[idx, "Lat"] = lat
+                                df_atualizados.at[idx, "Lon"] = lon
+                                df_atualizados.at[idx, "Opcoes_Endereco"] = json.dumps(novas_opcoes, ensure_ascii=False)
+
                         atualizar_base_pedidos(df_atualizados)
                         st.rerun()
 
