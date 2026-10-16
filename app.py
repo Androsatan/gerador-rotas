@@ -2322,7 +2322,7 @@ if st.session_state["modulo_ativo"] == "rotas":
 
             col_acao1, col_acao2, col_acao3 = st.columns(3)
 
-with col_acao1:
+        with col_acao1:
                 if st.button(
                     "🔍 Buscar CEP após Editar Tabela",
                     use_container_width=True,
