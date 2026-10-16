@@ -536,13 +536,9 @@ def pode_ser_nome_cliente(linha: str, locais_dict: dict = None) -> bool:
 
 def separar_componentes_endereco(endereco_bruto: str):
     end_limpo = str(endereco_bruto).strip()
-    # Remove rótulos como "Endereço:", "End:", "Local:" mesmo com acento ou repetidos
     end_limpo = re.sub(r"\b(endere[cç]o|end\.?|local|entrega)\s*[:\-]?\s*", " ", end_limpo, flags=re.IGNORECASE).strip()
-    # Remove observações entre parênteses como "(No gps pode apontar...)"
     end_limpo = re.sub(r"\([^)]*\)", " ", end_limpo)
-    # Normaliza prefixo colado como "AV.PRESIDENTE" -> "Av. Presidente"
     end_limpo = re.sub(r"^(av|r|al|tv)\.([a-zA-Z])", r"\1. \2", end_limpo, flags=re.IGNORECASE)
-    # Normaliza número com 'n' colado como "n300" ou "nº 300" -> " 300"
     end_limpo = re.sub(r"\b(?:n[º°.]?\s*)(\d{1,5})\b", r" \1", end_limpo, flags=re.IGNORECASE)
 
     cep_explicito = ""
@@ -573,7 +569,6 @@ def separar_componentes_endereco(endereco_bruto: str):
         numero = ""
         resto = ""
 
-    # Remove complementos de apartamento, bloco, sala, academia, clube, referência
     resto_limpo = re.sub(
         r"\b(ap\.?|apto\.?|apartamento|bl\.?|bloco|casa|sl\.?|sala|lj\.?|loja)\s*\d*[a-zA-Z]?\b",
         " ",
@@ -609,7 +604,6 @@ def separar_componentes_endereco(endereco_bruto: str):
     else:
         bairro_dica = bairro_pos
 
-    # Se a rua não tiver prefixo (ex: "Tamoios", "Galba Veloso", "Dulce Maria"), preserva o nome limpo
     rua = re.sub(r"\s+", " ", rua).strip(" ,.-:")
     bairro_dica = re.sub(r"\s+", " ", bairro_dica).strip(" ,.-:")
 
@@ -652,7 +646,6 @@ def consultar_cep_direto(cep_digitos: str) -> dict:
         return {}
     headers = {"User-Agent": "Mozilla/5.0 (compatible; RotasRMBH/3.0)"}
 
-    # 1) BrasilAPI (muito rápida em servidores cloud internacionais)
     try:
         r = requests.get(f"https://brasilapi.com.br/api/cep/v1/{cep_limpo}", headers=headers, timeout=2.5)
         if r.status_code == 200:
@@ -667,7 +660,6 @@ def consultar_cep_direto(cep_digitos: str) -> dict:
     except Exception:
         pass
 
-    # 2) OpenCEP
     try:
         r2 = requests.get(f"https://opencep.com/v1/{cep_limpo}.json", headers=headers, timeout=2.5)
         if r2.status_code == 200:
@@ -682,7 +674,6 @@ def consultar_cep_direto(cep_digitos: str) -> dict:
     except Exception:
         pass
 
-    # 3) ViaCEP
     try:
         r3 = requests.get(f"https://viacep.com.br/ws/{cep_limpo}/json/", headers=headers, timeout=2.5)
         if r3.status_code == 200:
@@ -876,17 +867,10 @@ def consultar_viacep_com_tolerancia(rua_original: str, rua_sem_prefixo: str, cid
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade: str):
-    """
-    Busca candidatos de endereço em ArcGIS, Photon e Nominatim para garantir:
-    1) Reconhecimento mesmo quando ViaCEP falha ou para ruas curtas ('Rua H');
-    2) Detecção do bairro real (e não Regional 'Centro-Sul'/'Noroeste');
-    3) Lista de opções de bairros quando a rua existe em mais de um bairro na RMBH.
-    """
     headers = {"User-Agent": "GeradorRotasRMBH/3.0 (contato@geradorrotas.app)"}
     candidatos = []
     rua_Com_pref = formatar_via_com_prefixo(rua, rua)
 
-    # 1) ArcGIS com todos os campos (StPreType, StName, StType, Nbrhd, District, City, Postal)
     try:
         q_arc = f"{rua_Com_pref}, {numero}, {bairro_dica}, {cidade}, Minas Gerais, Brasil".replace(", ,", ",")
         url_arc = (
@@ -934,7 +918,6 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
     except Exception:
         pass
 
-    # 2) Photon (OpenStreetMap) - excelente para achar todos os bairros reais em BH/Contagem/Nova Lima
     try:
         q_ph = f"{rua_Com_pref} {numero} {bairro_dica} {cidade} MG".strip()
         url_ph = f"https://photon.komoot.io/api/?q={quote(q_ph)}&lat=-19.9167&lon=-43.9345&limit=10"
@@ -966,7 +949,6 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
     except Exception:
         pass
 
-    # 3) Se não tinha bairro informado ou ainda faltou bairro real, consulta Nominatim para listar bairros homônimos
     precisa_nominatim = (not bairro_dica) or all(not c.get("bairro") for c in candidatos)
     if precisa_nominatim:
         try:
@@ -1011,7 +993,6 @@ def buscar_endereco_completo(endereco_bruto: str):
     if not str(endereco_bruto).strip():
         return "", "❌ NÃO ENCONTRADO - CORRIGIR", None, None, []
 
-    # Se já possuir CEP explícito no texto, valida direto
     m_cep_texto = re.search(r"\b(\d{5})-?(\d{3})\b", str(endereco_bruto))
     cep_pre_informado = f"{m_cep_texto.group(1)}-{m_cep_texto.group(2)}" if m_cep_texto else ""
 
@@ -1045,7 +1026,6 @@ def buscar_endereco_completo(endereco_bruto: str):
                 partes_op.append(cep_op)
             mapa_bairros_opcoes[chave_b] = ", ".join(partes_op)
 
-    # 1) Tenta ViaCEP
     cidades_para_testar = [cidade]
     if bairro_dica:
         for cid_extra in ["Contagem", "Nova Lima", "Belo Horizonte", "Ribeirão das Neves", "Sabará", "Betim", "Santa Luzia"]:
@@ -1087,7 +1067,7 @@ def buscar_endereco_completo(endereco_bruto: str):
 
             if bateu_bairro_dica:
                 escolhido = bateu_bairro_dica[0]
-                mapa_bairros_opcoes.clear()  # Bairro já foi confirmado!
+                mapa_bairros_opcoes.clear()
             elif bairro_dica and cid_teste != cidade:
                 continue
             else:
@@ -1099,7 +1079,6 @@ def buscar_endereco_completo(endereco_bruto: str):
             cep_encontrado = escolhido.get("cep", "") or cep_encontrado
             break
 
-    # 2) Busca Multifonte (ArcGIS + Photon + Nominatim)
     candidatos_geo = buscar_candidatos_multifonte(
         logradouro_oficial if logradouro_oficial else rua,
         numero,
@@ -1108,7 +1087,6 @@ def buscar_endereco_completo(endereco_bruto: str):
     )
 
     if candidatos_geo:
-        # Se o usuário informou bairro, prioriza candidato que bata com o bairro ou usa o bairro informado
         for cg in candidatos_geo:
             if not bairro_dica and cg.get("bairro"):
                 registrar_opcao_bairro(
@@ -1140,7 +1118,6 @@ def buscar_endereco_completo(endereco_bruto: str):
         if melhor_cg.get("cidade"):
             cidade_oficial = melhor_cg["cidade"]
 
-    # 3) Se temos CEP (do ArcGIS/Photon/Texto), enriquece via BrasilAPI/OpenCEP/ViaCEP para ter o Bairro Oficial exato!
     if cep_encontrado:
         dados_cep = consultar_cep_direto(cep_encontrado)
         if dados_cep and dados_cep.get("logradouro"):
@@ -1252,11 +1229,6 @@ def validar_e_geocodificar_partida(texto_partida: str):
 
 
 def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedor_padrao: str = "") -> list:
-    """
-    Extrai cliente(s), itens e endereço de um bloco de mensagem.
-    Se uma mesma mensagem tiver um único endereço e múltiplos clientes (ex: Vinicius, Ryan, Ana Clara),
-    divide automaticamente mantendo o endereço para cada um.
-    """
     linhas_endereco = []
     outras_linhas = []
 
@@ -1265,7 +1237,6 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
         if not l_strip or eh_subtitulo_ou_divisoria(l_strip):
             continue
 
-        # Se a linha começa com "Mercadoria:" ou "Itens:", limpa o rótulo e força como item
         if re.match(r"^(mercadoria|itens?|produtos?)\s*[:\-]", remover_acentos(l_strip.lower())):
             item_limpo = re.sub(r"^(mercadoria|itens?|produtos?)\s*[:\-]\s*", "", l_strip, flags=re.IGNORECASE).strip()
             if item_limpo:
@@ -1292,7 +1263,6 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
 
     endereco_bruto_final = ", ".join(linhas_endereco)
 
-    # Agrupa por cliente caso haja mais de um cliente para o mesmo endereço no bloco
     sub_pedidos = []
     cliente_atual = None
     itens_atuais = []
@@ -1306,7 +1276,6 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
             elif cliente_atual is None:
                 cliente_atual = valor
             else:
-                # Dois nomes seguidos sem itens entre eles: mantém o primeiro
                 pass
         else:
             itens_atuais.append(valor)
@@ -1334,7 +1303,6 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
 
 
 def resolver_enderecos_em_paralelo(lista_enderecos_brutos: list) -> dict:
-    """Executa buscar_endereco_completo em paralelo (até 12 threads) para carregar 35+ pedidos em ~3 segundos."""
     unicos = list(dict.fromkeys([e for e in lista_enderecos_brutos if str(e).strip()]))
     resultados = {}
     if not unicos:
@@ -1856,7 +1824,6 @@ def renderizar_mapa_rotas(df_rotas: pd.DataFrame, nomes_rotas: list, coord_parti
 
 # ================= FUNÇÕES DO GERADOR DE ETIQUETAS (10x15cm) =================
 def localizar_modelo_pdf_no_repositorio():
-    """Busca automaticamente o arquivo Etiqueta.pdf na mesma pasta do repositório GitHub."""
     pasta_base = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else "."
     for nome_arq in NOMES_ARQUIVO_MODELO:
         caminho_tentativa = os.path.join(pasta_base, nome_arq)
@@ -1868,17 +1835,12 @@ def localizar_modelo_pdf_no_repositorio():
 
 
 def limpar_nome_para_etiqueta(nome_bruto: str) -> str:
-    """Remove colchetes de vendedor [2T] para a etiqueta impressa, mantendo o nome limpo."""
     sem_vendedor = re.sub(r"\[.*?\]", "", str(nome_bruto))
     sem_espacos_duplos = re.sub(r"\s+", " ", sem_vendedor).strip()
     return sem_espacos_duplos.upper()
 
 
 def formatar_endereco_para_etiqueta(endereco_bruto: str) -> str:
-    """
-    Remove apenas CEPs que estejam intercalados no formato antigo do Circuit ('Rua X, 10, 30000-000 - Bairro')
-    sem nunca apagar o número da rua ou cortar o CEP no final do endereço do Gerador de Rotas.
-    """
     end = str(endereco_bruto).strip()
     end = re.sub(r",\s*\d{5}-?\d{3}\s*-\s*", " - ", end)
     end = re.sub(r"\s+", " ", end).strip(" ,")
@@ -1893,15 +1855,6 @@ def atualizar_base_etiquetas(novo_df: pd.DataFrame):
 
 
 def extrair_etiquetas_de_texto_rota(texto_colado: str) -> pd.DataFrame:
-    """
-    Lê a lista de nomes e endereços exatamente como é gerada no Gerador de Rotas:
-    Exemplo:
-        ROTA FP
-
-        Rua Marrocos, 47, Vila Jardim Leblon, Belo Horizonte, 31575-230
-        AXEL [2T] (2PCT)
-    Também aceita a ordem inversa (Nome na linha de cima e Endereço na linha de baixo).
-    """
     linhas = [l.strip() for l in texto_colado.splitlines()]
     rota_atual = "GERAL"
     registros = []
@@ -1930,7 +1883,6 @@ def extrair_etiquetas_de_texto_rota(texto_colado: str) -> pd.DataFrame:
         elif eh_linha_endereco(l2) and not eh_linha_endereco(l1):
             nome_orig, end_orig = l1, l2
         else:
-            # Padrão do Gerador de Rotas: 1ª linha é Endereço, 2ª linha é Cliente
             end_orig, nome_orig = l1, l2
 
         registros.append({
@@ -1950,7 +1902,6 @@ def extrair_etiquetas_de_texto_rota(texto_colado: str) -> pd.DataFrame:
                 buffer_linhas = []
             continue
 
-        # Identifica cabeçalho de rota (ex: "ROTA FP", "ROTA LE", "ROTA 1")
         if re.match(r"^ROTA\b", ln, flags=re.IGNORECASE) and not eh_linha_endereco(ln):
             if buffer_linhas:
                 processar_par(buffer_linhas, rota_atual)
@@ -1970,7 +1921,6 @@ def extrair_etiquetas_de_texto_rota(texto_colado: str) -> pd.DataFrame:
 
 
 def importar_etiquetas_das_rotas_calculadas(df_rotas: pd.DataFrame) -> pd.DataFrame:
-    """Converte o DataFrame das rotas calculadas no Passo 4 diretamente para o formato de Etiquetas."""
     registros = []
     for idx, row in df_rotas.iterrows():
         nome_completo_rota = montar_linha_cliente(row)
@@ -1988,7 +1938,6 @@ def importar_etiquetas_das_rotas_calculadas(df_rotas: pd.DataFrame) -> pd.DataFr
 
 
 def quebrar_endereco_duas_linhas(endereco: str, limite_chars: int = 50):
-    """Divide o endereço em até 2 linhas para caber perfeitamente na largura de 10cm da etiqueta."""
     end = endereco.strip()
     if "MG," in end:
         partes = end.split("MG,", 1)
@@ -1997,7 +1946,6 @@ def quebrar_endereco_duas_linhas(endereco: str, limite_chars: int = 50):
     if len(end) <= limite_chars:
         return end, ""
 
-    # Tenta quebrar na vírgula mais próxima antes do limite
     corte = end.rfind(",", 0, limite_chars)
     if corte == -1:
         corte = end.rfind(" ", 0, limite_chars)
@@ -2010,26 +1958,19 @@ def quebrar_endereco_duas_linhas(endereco: str, limite_chars: int = 50):
 
 
 def gerar_pdf_etiquetas_10x15(df_selecionadas: pd.DataFrame, fonte_modelo_pdf) -> bytes:
-    """
-    Gera um único PDF no formato 10x15cm (100x150mm) mesclando cada etiqueta selecionada
-    sobre o arquivo modelo Etiqueta.pdf.
-    """
     largura, altura = 100 * mm, 150 * mm
     pdf_final_writer = PdfWriter()
 
     for _, row in df_selecionadas.iterrows():
-        # Lê uma cópia limpa da página do modelo para cada etiqueta
         modelo_reader = PdfReader(fonte_modelo_pdf)
         modelo_pagina = modelo_reader.pages[0]
 
         packet = BytesIO()
         can = canvas.Canvas(packet, pagesize=portrait((largura, altura)))
 
-        # Nome do Destinatário
         can.setFont("Helvetica-Bold", 9)
         can.drawString(38 * mm, 200, str(row.get("Nome Etiqueta", "")).strip())
 
-        # Endereço do Destinatário (com quebra inteligente em 2 linhas se necessário)
         can.setFont("Helvetica", 8)
         end_str = str(row.get("Endereco Etiqueta", "")).strip()
         linha_end_1, linha_end_2 = quebrar_endereco_duas_linhas(end_str, limite_chars=50)
@@ -2322,7 +2263,7 @@ if st.session_state["modulo_ativo"] == "rotas":
 
             col_acao1, col_acao2, col_acao3 = st.columns(3)
 
-        with col_acao1:
+            with col_acao1:
                 if st.button(
                     "🔍 Buscar CEP após Editar Tabela",
                     use_container_width=True,
@@ -2609,7 +2550,6 @@ elif st.session_state["modulo_ativo"] == "etiquetas":
         st.warning("⚠️ O arquivo `Etiqueta.pdf` não foi encontrado na pasta do GitHub. Faça o upload dele abaixo ou adicione `Etiqueta.pdf` ao repositório.")
         arquivo_modelo_upload = st.file_uploader("Subir modelo Etiqueta.pdf", type="pdf")
 
-    # Se já existirem rotas calculadas no Gerador de Rotas, oferece atalho rápido para puxá-las
     if not st.session_state["df_rotas_calculadas"].empty:
         df_rotas_disp = st.session_state.get("df_rotas_editadas", st.session_state["df_rotas_calculadas"])
         if st.button(f"📥 Puxar Automaticamente as {len(df_rotas_disp)} Entregas das Rotas Calculadas", use_container_width=True):
@@ -2617,7 +2557,7 @@ elif st.session_state["modulo_ativo"] == "etiquetas":
             atualizar_base_etiquetas(df_imp)
             st.rerun()
 
-    # --- 1) COLAR LISTA DE NOMES E ENDEREÇOS (MESMO FORMATO DO GERADOR DE ROTAS) ---
+    # --- 1) COLAR LISTA DE NOMES E ENDEREÇOS ---
     st.subheader("1️⃣ Colar Lista de Nomes e Endereços")
     texto_lista_etiquetas = st.text_area(
         "Cole abaixo a lista de entregas (no mesmo formato gerado pelo Gerador de Rotas):",
@@ -2689,7 +2629,6 @@ elif st.session_state["modulo_ativo"] == "etiquetas":
 
             rotas_presentes = sorted(list(df_base_e["Rota"].dropna().unique()))
 
-            # Botões rápidos de seleção
             c_sel1, c_sel2, c_sel3, c_sel4 = st.columns(4)
             with c_sel1:
                 if st.button("☑️ Marcar Todas", use_container_width=True):
