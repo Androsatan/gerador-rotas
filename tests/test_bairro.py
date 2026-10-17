@@ -1,7 +1,8 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from gerador_rotas.geo.bairro import escolher_candidato_bairro
+from gerador_rotas.geo.bairro import escolher_candidato_bairro, localizar_bairro
 
 
 class EscolhaDeBairroTest(unittest.TestCase):
@@ -22,6 +23,24 @@ class EscolhaDeBairroTest(unittest.TestCase):
             {"nome": "Rua Santa Maria Goretti", "lat": -19.980, "lon": -44.015, "tipo": "streetaddress"},
         ]
         self.assertIsNone(escolher_candidato_bairro("Maria Goretti", candidatos))
+
+    def test_fonte_incompleta_nao_grava_o_bairro_como_inexistente(self):
+        candidatos = [
+            {"nome": "Maria Teresa", "lat": -19.818, "lon": -43.883, "tipo": "locality", "cidade": "Belo Horizonte"},
+        ]
+        with patch("gerador_rotas.geo.bairro._consultar", return_value=(candidatos, 1)):
+            status, _desc, lat, _lon = localizar_bairro("Maria Goretti", "Belo Horizonte")
+        self.assertEqual(status, "rede")
+        self.assertIsNone(lat)
+
+    def test_tres_fontes_sem_o_nome_contam_como_nao_encontrado(self):
+        candidatos = [
+            {"nome": "Savassi", "lat": -19.936, "lon": -43.933, "tipo": "suburb", "cidade": "Belo Horizonte"},
+        ]
+        with patch("gerador_rotas.geo.bairro._consultar", return_value=(candidatos, 3)):
+            status, _desc, lat, _lon = localizar_bairro("Bairro Inventado Xyz", "Belo Horizonte")
+        self.assertEqual(status, "vazio")
+        self.assertIsNone(lat)
 
     def test_codigo_nao_grava_o_ponto_errado(self):
         raiz = Path(__file__).resolve().parents[1] / "gerador_rotas"

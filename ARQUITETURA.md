@@ -21,7 +21,7 @@ gerador-rotas/
       similaridade.py            # acentos e comparação de rua, bairro e produto
       endereco_texto.py          # separar rua, número, bairro e cidade; classificar linhas
       produtos.py                # item do pedido -> Local 1–4 e quantidade de pacotes
-      parser_pedidos.py          # texto de WhatsApp -> tabela de pedidos
+      parser_pedidos.py          # texto colado -> um pedido por endereço; vários nomes ficam no primeiro
     geo/
       cep.py                     # ViaCEP, BrasilAPI e OpenCEP
       bairro.py                  # achar o bairro pelo nome, sem coordenada gravada
@@ -37,12 +37,13 @@ gerador-rotas/
     ui/
       tema.py                    # CSS
       auth.py                    # senha de acesso
-      sidebar.py                 # ponto de partida e locais de produto
+      sidebar.py                 # partida (ícone ou aviso), locais de produto e gravação do JSON
       mapa.py                    # Leaflet com o traçado da rua
       pagina_rotas.py            # passos 1 a 4 do gerador
       pagina_etiquetas.py        # seleção e download do PDF
   tests/
-    test_bairro.py               # o bairro certo vence homônimos e ruas
+    test_bairro.py               # bairro certo, rua homónima e falha parcial das fontes
+    test_parser_pedidos.py       # vários nomes no mesmo endereço viram um pedido
     test_planejador.py           # cota, ordem aberta, PRIMEIRO e ÚLTIMO
 ```
 
@@ -56,9 +57,9 @@ Só desenha e reage a cliques. Não decide ordem de entrega nem escolhe coordena
 
 | Ficheiro | Função |
 |---|---|
-| `tema.py` | CSS dos botões e do empilhamento em ecrã estreito |
+| `tema.py` | CSS dos botões. Em ecrã estreito, as colunas da área principal empilham; as da sidebar não, para o ícone da partida ficar ao lado do campo |
 | `auth.py` | `exigir_login()`: bloqueia a app até a senha |
-| `sidebar.py` | Campo de partida, quatro locais de produto e gravação do JSON |
+| `sidebar.py` | Campo de partida, quatro locais de produto e gravação do JSON. Com o texto igual ao JSON, só mostra ✅ ou ❌ ao lado do campo. A frase completa de partida localizada ou não localizada aparece só depois de o texto mudar, e nesse caso o ícone sai |
 | `pagina_rotas.py` | Colar pedidos, conferir, definir cotas, gerar, ajustar rota e copiar o texto |
 | `pagina_etiquetas.py` | Marcar, editar e baixar o PDF |
 | `mapa.py` | Pinos numerados e a linha colorida de cada rota |
@@ -73,7 +74,7 @@ Texto e regras que não dependem de internet nem de Streamlit, salvo o parser, q
 | `similaridade.py` | Normaliza acento e mede se duas ruas, dois bairros ou dois produtos são o mesmo |
 | `endereco_texto.py` | Decide se uma linha é endereço, produto, complemento ou nome. Separa rua, número, bairro e cidade. `dentro_perimetro_rmbh` limita o resultado a BH e arredores |
 | `produtos.py` | Compara os itens colados com os produtos cadastrados e devolve quais locais (1 a 4) entram no pedido. Isso só muda a contagem de pacotes |
-| `parser_pedidos.py` | Parte o texto colado em pedidos, resolve os endereços em paralelo e monta a linha `NOME [VENDEDOR] (NPCT)` |
+| `parser_pedidos.py` | Parte o texto colado em pedidos, resolve os endereços em paralelo e monta a linha `NOME [VENDEDOR] (NPCT)`. Vários nomes no mesmo endereço viram um pedido só, com o primeiro nome e todos os itens |
 
 ### `geo/`
 
@@ -82,7 +83,7 @@ Tudo o que transforma texto de lugar em latitude e longitude.
 | Ficheiro | Função |
 |---|---|
 | `cep.py` | Consulta CEP direto e busca de logradouro no ViaCEP com tolerância de grafia |
-| `bairro.py` | Consulta ArcGIS, Photon e Nominatim em paralelo. Aceita o candidato só se o nome bater e o tipo for bairro, não rua |
+| `bairro.py` | Consulta ArcGIS, Photon e Nominatim em paralelo. Aceita o candidato só se o nome bater e o tipo for bairro, não rua. «Não encontrado» só vale quando as três fontes responderam |
 | `geocodificadores.py` | Cache do bairro, geocodificação simples de uma rua e lista de candidatos de várias fontes |
 | `resolver_endereco.py` | Junta ViaCEP e as outras fontes até devolver endereço padronizado, status, lat, lon e bairros ambíguos |
 | `partida.py` | Entrada da sidebar: CEP, rua com número, ou nome de bairro |
@@ -124,8 +125,9 @@ A geocodificação do cliente acontece antes do botão de gerar. O botão usa la
    - CEP de 8 dígitos vai a `cep.py` e depois a `geocodificar_endereco_rua`.
    - Texto com prefixo de rua ou número vai a `buscar_endereco_completo`.
    - Nome de bairro vai a `buscar_coordenada_bairro` → `localizar_bairro`.
+   - O campo fica na chave `campo_ponto_partida`. Se o texto for o do JSON, a sidebar desenha só ✅ ou ❌. Se o utilizador alterar o texto, o ícone some e entra o aviso com o nome encontrado ou o motivo da falha.
 3. O utilizador cola o texto e carrega em **Adicionar à Lista**.
-4. `extrair_pedidos_brutos` parte o texto em blocos, identifica cliente, itens e endereço.
+4. `listar_pre_pedidos` parte o texto em blocos. Sem cabeçalho de WhatsApp, um endereço no topo seguido de nomes e itens é um bloco só: a continuação sem endereço volta para o bloco do endereço. Dentro do bloco, o cliente é o primeiro nome; os nomes seguintes não abrem pedido novo e os itens deles entram no mesmo pedido. Dois endereços diferentes continuam dois pedidos. `extrair_pedidos_brutos` geocodifica essa lista.
 5. `identificar_locais_dos_itens` marca os locais de produto e a quantidade de pacotes. Esses locais não viram parada.
 6. `resolver_enderecos_em_paralelo` chama `buscar_endereco_completo` para cada endereço único (até 12 em paralelo).
 7. Cada linha da tabela fica com `Endereco`, `Status`, `Lat`, `Lon` e, se a rua existir em mais de um bairro, `Opcoes_Endereco`.
@@ -196,7 +198,7 @@ Local 1 a 4 classificam itens e contam pacotes. A moto sai só do ponto de parti
 
 ### Coordenadas
 
-- Bairro de partida: `geo/bairro.py`. Rejeita rua homónima (por exemplo a Rua Santa Maria Goretti, no Barreiro) e exige que o nome devolvido corresponda ao texto digitado.
+- Bairro de partida: `geo/bairro.py`. Rejeita rua homónima (por exemplo a Rua Santa Maria Goretti, no Barreiro) e exige que o nome devolvido corresponda ao texto digitado. Se alguma das três fontes não responder, o resultado é falha de rede, não «bairro inexistente».
 - Endereço de cliente: `geo/resolver_endereco.py`.
 - Perímetro aceite: latitude de -20,40 a -19,40 e longitude de -44,60 a -43,40.
 - Falha de geocodificação: `lat`/`lon` ficam vazios e o status deixa de ser `✅ OK`. Não usar `-19.9167, -43.9345` como fallback.
@@ -210,22 +212,22 @@ Local 1 a 4 classificam itens e contam pacotes. A moto sai só do ponto de parti
 | Bairro e rua | ArcGIS, Photon, Nominatim |
 | Tempo, distância e traçado | OSRM público, perfil `driving` |
 
-As funções de rede em `geo/` usam `@st.cache_data` (em geral 24 h). Falha de rede na busca de bairro não fica em cache; o nome não encontrado fica. A primeira consulta de um bairro pode levar alguns segundos.
+As funções de rede em `geo/` usam `@st.cache_data` (em geral 24 h). Na busca de bairro, falha de rede e consulta incompleta não ficam em cache. «Não encontrado» só é gravado quando ArcGIS, Photon e Nominatim responderam e nenhum nome bateu. A primeira consulta de um bairro pode levar alguns segundos.
 
 O OSRM público é demonstração: pode limitar ou cair. A tela tem de continuar a mostrar o aviso quando a fonte da matriz não for `osrm`.
 
 ### Estado da sessão
 
-Chaves principais em `estado.py`: `df_pedidos`, `df_pedidos_editados`, `df_rotas_calculadas`, `df_rotas_editadas`, `nomes_rotas_ativas`, `resumo_km_rotas`, `geometrias_rotas`, `avisos_rotas`, `coord_partida_atual`, `df_etiquetas`. Tudo vive na memória do processo Streamlit. Reiniciar o servidor limpa as listas; o JSON só guarda partida e produtos.
+Chaves principais em `estado.py`: `df_pedidos`, `df_pedidos_editados`, `df_rotas_calculadas`, `df_rotas_editadas`, `nomes_rotas_ativas`, `resumo_km_rotas`, `geometrias_rotas`, `avisos_rotas`, `coord_partida_atual`, `df_etiquetas`. A sidebar também guarda `campo_ponto_partida`. Tudo vive na memória do processo Streamlit. Reiniciar o servidor limpa as listas; o JSON só guarda partida e produtos.
 
 ### Onde não colocar código novo
 
 - Cálculo de rota, HTTP e leitura de pedido não voltam para `app.py`.
 - A UI não importa detalhes do OR-Tools. Ela chama `gerar_rotas` e `recalcular_todas_as_rotas`.
-- Testes de ordem e de bairro não precisam de Streamlit nem de rede: `tests/test_planejador.py` e `tests/test_bairro.py`.
+- Testes de ordem, de bairro e de leitura de pedido não precisam de Streamlit nem de rede: `tests/test_planejador.py`, `tests/test_bairro.py` e `tests/test_parser_pedidos.py`. O parser é coberto por `listar_pre_pedidos`, antes da geocodificação.
 
 ```text
-python -m unittest tests.test_planejador tests.test_bairro
+python -m unittest tests.test_planejador tests.test_bairro tests.test_parser_pedidos
 ```
 
 ### Dependências de sentido único

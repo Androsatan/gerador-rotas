@@ -7,17 +7,41 @@ from gerador_rotas.geo.partida import validar_e_geocodificar_partida
 def render_sidebar(config_salva):
     with st.sidebar:
         st.header("📍 Ponto de Partida")
-        ponto_partida = st.text_input(
-            "Bairro, Rua+Nº ou CEP de saída:",
-            value=config_salva.get("ponto_partida", "Bairro Maria Goretti, Belo Horizonte, MG"),
-            help="Pode digitar apenas o bairro (ex: 'Bairro Maria Goretti' ou 'Savassi'), uma rua com número ou um CEP."
-        )
+        valor_salvo = str(config_salva.get("ponto_partida", "Bairro Maria Goretti, Belo Horizonte, MG"))
+        chave_partida = "campo_ponto_partida"
+        if chave_partida not in st.session_state:
+            st.session_state[chave_partida] = valor_salvo
+        partida_alterada = st.session_state[chave_partida].strip() != valor_salvo.strip()
+        ajuda_partida = "Pode digitar apenas o bairro (ex: 'Bairro Maria Goretti' ou 'Savassi'), uma rua com número ou um CEP."
+
+        if partida_alterada:
+            ponto_partida = st.text_input(
+                "Bairro, Rua+Nº ou CEP de saída:",
+                key=chave_partida,
+                help=ajuda_partida,
+            )
+        else:
+            col_campo, col_status = st.columns([0.86, 0.14], vertical_alignment="bottom")
+            with col_campo:
+                ponto_partida = st.text_input(
+                    "Bairro, Rua+Nº ou CEP de saída:",
+                    key=chave_partida,
+                    help=ajuda_partida,
+                )
 
         partida_ok, desc_partida_validada, lat_partida, lon_partida = validar_e_geocodificar_partida(ponto_partida)
-        if partida_ok:
-            st.success(f"✅ **Partida localizada:**\n{desc_partida_validada}")
+        if partida_alterada:
+            if partida_ok:
+                st.success(f"**Partida localizada:**\n{desc_partida_validada}")
+            else:
+                st.error(desc_partida_validada)
         else:
-            st.error(desc_partida_validada)
+            with col_status:
+                marca = "✅" if partida_ok else "❌"
+                st.markdown(
+                    f"<div style='text-align:center;font-size:1.35rem;line-height:2.5rem'>{marca}</div>",
+                    unsafe_allow_html=True,
+                )
 
         st.divider()
         st.header("📦 Locais (Pacotes)")

@@ -53,23 +53,17 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
 
     endereco_bruto_final = ", ".join(linhas_endereco)
 
-    sub_pedidos = []
     cliente_atual = None
     itens_atuais = []
 
     for tipo, valor in outras_linhas:
         if tipo == "NOME":
-            if cliente_atual and itens_atuais:
-                sub_pedidos.append((cliente_atual, itens_atuais))
+            if cliente_atual is None:
                 cliente_atual = valor
-                itens_atuais = []
-            elif cliente_atual is None:
-                cliente_atual = valor
-            else:
-                pass
         else:
             itens_atuais.append(valor)
 
+    sub_pedidos = []
     if cliente_atual:
         sub_pedidos.append((cliente_atual, itens_atuais))
     elif itens_atuais:
@@ -108,7 +102,26 @@ def resolver_enderecos_em_paralelo(lista_enderecos_brutos: list) -> dict:
                 resultados[end_b] = (end_b, "❌ ERRO NA BUSCA - CONFERIR", None, None, [])
     return resultados
 
-def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
+def _bloco_tem_endereco(bloco: list, locais_dict: dict) -> bool:
+    return any(eh_linha_endereco(linha, locais_dict) for linha in bloco)
+
+def _fundir_continuacao_sem_endereco(blocos: list, locais_dict: dict) -> list:
+    """Junta ao pedido anterior as linhas que ficaram sem endereço.
+
+    O endereço no topo seguido de vários nomes partia o texto em dois:
+    o endereço sozinho e os nomes à parte. Esses nomes são o mesmo pedido.
+    """
+    if not blocos:
+        return []
+    fundidos = [list(blocos[0])]
+    for bloco in blocos[1:]:
+        if fundidos and not _bloco_tem_endereco(bloco, locais_dict):
+            fundidos[-1].extend(bloco)
+        else:
+            fundidos.append(list(bloco))
+    return fundidos
+
+def listar_pre_pedidos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = "") -> list:
     linhas_originais = texto_bruto.splitlines()
     tem_cabecalho_chat = any(REGEX_CABECALHO_CHAT.match(l) for l in linhas_originais if l.strip())
 
@@ -167,10 +180,15 @@ def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao:
             i += 1
         if bloco_atual:
             blocos.append(bloco_atual)
+        blocos = _fundir_continuacao_sem_endereco(blocos, locais_dict)
 
     pre_pedidos = []
     for b in blocos:
         pre_pedidos.extend(extrair_dados_brutos_do_bloco(b, locais_dict, vendedor_padrao))
+    return pre_pedidos
+
+def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
+    pre_pedidos = listar_pre_pedidos(texto_bruto, locais_dict, vendedor_padrao)
 
     if not pre_pedidos:
         return pd.DataFrame()

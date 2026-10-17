@@ -150,11 +150,14 @@ def _nominatim(consulta: str, cidade: str):
     return saida
 
 
+_FONTES_BAIRRO = (_arcgis, _photon, _nominatim)
+
+
 def _consultar(consulta: str, cidade: str):
     candidatos = []
     fontes_ok = 0
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futuros = [pool.submit(fn, consulta, cidade) for fn in (_arcgis, _photon, _nominatim)]
+    with ThreadPoolExecutor(max_workers=len(_FONTES_BAIRRO)) as pool:
+        futuros = [pool.submit(fn, consulta, cidade) for fn in _FONTES_BAIRRO]
         for fut in futuros:
             try:
                 candidatos.extend(fut.result())
@@ -175,11 +178,12 @@ def localizar_bairro(nome_bairro_limpo: str, cidade: str):
     if not remover_acentos(nome.lower()).startswith("santa "):
         consultas.append(f"Bairro Santa {nome}, {cidade}, Minas Gerais, Brasil")
 
-    alguma_fonte = False
+    consulta_completa = False
     for consulta in consultas:
         candidatos, fontes_ok = _consultar(consulta, cidade)
-        alguma_fonte = alguma_fonte or fontes_ok > 0
-        if fontes_ok == 0 and not alguma_fonte:
+        if fontes_ok == len(_FONTES_BAIRRO):
+            consulta_completa = True
+        if fontes_ok == 0:
             continue
         escolhido = escolher_candidato_bairro(nome, candidatos)
         if escolhido:
@@ -187,6 +191,6 @@ def localizar_bairro(nome_bairro_limpo: str, cidade: str):
             desc = f"Bairro {escolhido['nome']}, {cidade_ok}"
             return "ok", desc, escolhido["lat"], escolhido["lon"]
 
-    if not alguma_fonte:
+    if not consulta_completa:
         return "rede", "", None, None
     return "vazio", "", None, None

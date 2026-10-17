@@ -33,11 +33,11 @@ def aplicar_tema():
     }
 
     @media (max-width: 980px) {
-        div[data-testid="stHorizontalBlock"] {
+        section.main div[data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important;
         }
-        div[data-testid="column"],
-        div[data-testid="stColumn"] {
+        section.main div[data-testid="column"],
+        section.main div[data-testid="stColumn"] {
             width: 100% !important;
             flex: 1 1 100% !important;
             min-width: 100% !important;

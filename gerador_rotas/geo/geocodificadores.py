@@ -16,11 +16,11 @@ from gerador_rotas.geo.bairro import localizar_bairro
 @st.cache_data(ttl=86400, show_spinner=False)
 def _bairro_cacheado(nome_bairro_limpo: str, cidade: str):
     status, desc, lat, lon = localizar_bairro(nome_bairro_limpo, cidade)
-    if status == "rede":
-        raise ConnectionError("rede")
-    if status != "ok":
+    if status == "ok":
+        return True, desc, lat, lon
+    if status == "vazio":
         return False, "❌ Bairro não localizado em BH/Região. Confira a grafia ou digite uma rua/CEP.", None, None
-    return True, desc, lat, lon
+    raise ConnectionError("rede")
 
 
 def buscar_coordenada_bairro(nome_bairro_limpo: str, cidade: str):
