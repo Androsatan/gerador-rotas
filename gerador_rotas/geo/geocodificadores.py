@@ -6,6 +6,7 @@ import streamlit as st
 
 from gerador_rotas.dominio.endereco_texto import (
     dentro_perimetro_rmbh,
+    eh_nome_de_cidade,
     eh_regional_bh,
     formatar_via_com_prefixo,
 )
@@ -100,7 +101,9 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                 via_arc = formatar_via_com_prefixo(via_arc, rua)
                 nbr = (at.get("Nbrhd") or "").strip()
                 dist = (at.get("District") or "").strip()
-                bairro_c = nbr if (nbr and not eh_regional_bh(nbr)) else (dist if not eh_regional_bh(dist) else "")
+                bairro_c = nbr if (nbr and not eh_regional_bh(nbr) and not eh_nome_de_cidade(nbr)) else ""
+                if not bairro_c and dist and not eh_regional_bh(dist) and not eh_nome_de_cidade(dist):
+                    bairro_c = dist
                 cid_c = (at.get("City") or cidade).strip()
                 cep_raw = re.sub(r"\D", "", str(at.get("Postal", "")))
                 cep_c = f"{cep_raw[:5]}-{cep_raw[5:]}" if len(cep_raw) == 8 else ""
@@ -131,7 +134,7 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                     if not dentro_perimetro_rmbh(lat_p, lon_p):
                         continue
                     b_ph = props.get("suburb") or props.get("district") or props.get("locality") or ""
-                    if eh_regional_bh(b_ph):
+                    if eh_regional_bh(b_ph) or eh_nome_de_cidade(b_ph):
                         b_ph = ""
                     cid_ph = props.get("city") or props.get("town") or cidade
                     cep_raw = re.sub(r"\D", "", str(props.get("postcode", "")))
@@ -167,7 +170,7 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                     if not via_n or similaridade_ruas(rua, via_n) < 0.68:
                         continue
                     b_n = ed.get("suburb") or ed.get("neighbourhood") or ed.get("quarter") or ""
-                    if eh_regional_bh(b_n):
+                    if eh_regional_bh(b_n) or eh_nome_de_cidade(b_n):
                         b_n = ""
                     cid_n = ed.get("city") or ed.get("town") or ed.get("municipality") or cidade
                     cep_raw = re.sub(r"\D", "", str(ed.get("postcode", "")))

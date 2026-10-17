@@ -57,6 +57,14 @@ def similaridade_ruas(rua_digitada: str, rua_candidata: str) -> float:
     media_palavras = sum(notas_palavras) / len(notas_palavras)
     menor_palavra = min(notas_palavras)
 
+    notas_candidato = [
+        max(SequenceMatcher(None, p_c, p_d).ratio() for p_d in t_dig)
+        for p_c in t_cand
+    ]
+    pior_candidato = min(notas_candidato)
+    if len(t_cand) > len(t_dig) and pior_candidato < 0.80:
+        return min(sim_frase, media_palavras, pior_candidato)
+
     if menor_palavra >= 0.80 and media_palavras >= 0.84:
         return max(sim_frase, media_palavras)
 

@@ -1,8 +1,10 @@
+import math
 import re
 
 import streamlit as st
 
 from gerador_rotas.dominio.endereco_texto import (
+    eh_nome_de_cidade,
     eh_regional_bh,
     formatar_via_com_prefixo,
     numero_cabe_na_faixa_viacep,
@@ -42,10 +44,17 @@ def buscar_endereco_completo(endereco_bruto: str):
     cidade_oficial = cidade
     lat, lon = None, None
     mapa_bairros_opcoes = {}
+    numero_confirmado_viacep = False
+
+    def bairro_util(nome_b):
+        nome = str(nome_b or "").strip()
+        return bool(nome) and not eh_regional_bh(nome) and not eh_nome_de_cidade(nome)
 
     def registrar_opcao_bairro(logr_op, bair_op, cid_op, cep_op):
         b_limpo = str(bair_op).strip()
-        if not b_limpo or eh_regional_bh(b_limpo):
+        if not bairro_util(b_limpo):
+            return
+        if logr_op and similaridade_ruas(rua, logr_op) < 0.90:
             return
         chave_b = remover_acentos(f"{b_limpo}_{cid_op}".lower())
         if chave_b not in mapa_bairros_opcoes:
@@ -70,12 +79,19 @@ def buscar_endereco_completo(endereco_bruto: str):
             if not dados_viacep:
                 continue
 
-            candidatos_faixa = [
+            mesma_rua = [
                 d for d in dados_viacep
-                if d.get("bairro") and numero_cabe_na_faixa_viacep(numero, d.get("complemento", ""))
+                if d.get("bairro") and similaridade_ruas(rua, d.get("logradouro", "")) >= 0.90
             ]
-            if not candidatos_faixa:
-                candidatos_faixa = [d for d in dados_viacep if d.get("bairro")]
+            if not mesma_rua:
+                continue
+
+            confirmados = [
+                d for d in mesma_rua
+                if numero and numero_cabe_na_faixa_viacep(numero, d.get("complemento", ""))
+            ]
+            esta_cidade_confirmou = bool(confirmados)
+            candidatos_faixa = confirmados if confirmados else mesma_rua
 
             def nota_candidato_viacep(item):
                 s_rua = similaridade_ruas(rua, item.get("logradouro", ""))
@@ -84,13 +100,14 @@ def buscar_endereco_completo(endereco_bruto: str):
 
             candidatos_faixa.sort(key=nota_candidato_viacep, reverse=True)
 
-            for item in candidatos_faixa:
-                registrar_opcao_bairro(
-                    item.get("logradouro") or rua,
-                    item.get("bairro", ""),
-                    item.get("localidade") or cid_teste,
-                    item.get("cep", "")
-                )
+            if esta_cidade_confirmou:
+                for item in candidatos_faixa:
+                    registrar_opcao_bairro(
+                        item.get("logradouro") or rua,
+                        item.get("bairro", ""),
+                        item.get("localidade") or cid_teste,
+                        item.get("cep", "")
+                    )
 
             bateu_bairro_dica = [
                 item for item in candidatos_faixa
@@ -100,15 +117,37 @@ def buscar_endereco_completo(endereco_bruto: str):
             if bateu_bairro_dica:
                 escolhido = bateu_bairro_dica[0]
                 mapa_bairros_opcoes.clear()
-            elif bairro_dica and cid_teste != cidade:
+                logradouro_oficial = formatar_via_com_prefixo(escolhido.get("logradouro", ""), rua)
+                bairro_escolhido = escolhido.get("bairro", "")
+                bairro_oficial = bairro_escolhido if bairro_util(bairro_escolhido) else bairro_dica.title()
+                cidade_oficial = escolhido.get("localidade", cid_teste)
+                cep_encontrado = escolhido.get("cep", "") or cep_encontrado
+                numero_confirmado_viacep = esta_cidade_confirmou
+                break
+            if bairro_dica and cid_teste != cidade:
+                mapa_bairros_opcoes.clear()
                 continue
-            else:
-                escolhido = candidatos_faixa[0] if candidatos_faixa else dados_viacep[0]
 
+            escolhido = candidatos_faixa[0]
             logradouro_oficial = formatar_via_com_prefixo(escolhido.get("logradouro", ""), rua)
-            bairro_oficial = escolhido.get("bairro", "")
             cidade_oficial = escolhido.get("localidade", cid_teste)
-            cep_encontrado = escolhido.get("cep", "") or cep_encontrado
+            if esta_cidade_confirmou:
+                if bairro_util(escolhido.get("bairro", "")):
+                    bairro_oficial = escolhido.get("bairro", "")
+                cep_encontrado = escolhido.get("cep", "") or cep_encontrado
+            else:
+                vistos_bairro = set()
+                unicos_bairro = []
+                for item in candidatos_faixa:
+                    nome_b = str(item.get("bairro", "")).strip()
+                    chave_b = remover_acentos(nome_b.lower())
+                    if bairro_util(nome_b) and chave_b not in vistos_bairro:
+                        vistos_bairro.add(chave_b)
+                        unicos_bairro.append(item)
+                if len(unicos_bairro) == 1:
+                    bairro_oficial = unicos_bairro[0].get("bairro", "")
+                    cep_encontrado = unicos_bairro[0].get("cep", "") or cep_encontrado
+            numero_confirmado_viacep = esta_cidade_confirmou
             break
 
     candidatos_geo = buscar_candidatos_multifonte(
@@ -118,15 +157,53 @@ def buscar_endereco_completo(endereco_bruto: str):
         cidade_oficial
     )
 
+    def metros_entre(lat1, lon1, lat2, lon2):
+        raio = 6371000.0
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+        return 2 * raio * math.asin(math.sqrt(min(1.0, a)))
+
     if candidatos_geo:
-        for cg in candidatos_geo:
-            if not bairro_dica and cg.get("bairro"):
-                registrar_opcao_bairro(
-                    cg["logradouro"],
-                    cg["bairro"],
-                    cg["cidade"],
-                    cg.get("cep") or cep_encontrado
+        if not numero_confirmado_viacep and not bairro_dica:
+            ancoras = []
+            for cg in candidatos_geo:
+                bairro_cg = cg.get("bairro") or ""
+                if not bairro_util(bairro_cg):
+                    continue
+                if similaridade_ruas(rua, cg.get("logradouro", "")) < 0.90:
+                    continue
+                if cg.get("lat") is None or cg.get("lon") is None:
+                    continue
+                mesmo_lugar = False
+                for alat, alon, abairro in ancoras:
+                    if similaridade_bairros(bairro_cg, abairro) >= 0.72 or metros_entre(cg["lat"], cg["lon"], alat, alon) < 400:
+                        mesmo_lugar = True
+                        break
+                if mesmo_lugar:
+                    continue
+                ancoras.append((cg["lat"], cg["lon"], bairro_cg))
+                if len(ancoras) > 1:
+                    registrar_opcao_bairro(
+                        cg["logradouro"], bairro_cg, cg["cidade"], cg.get("cep") or cep_encontrado
+                    )
+            if len(ancoras) > 1 and candidatos_geo:
+                primeiro = next(
+                    (
+                        cg for cg in candidatos_geo
+                        if bairro_util(cg.get("bairro"))
+                        and similaridade_ruas(rua, cg.get("logradouro", "")) >= 0.90
+                    ),
+                    None,
                 )
+                if primeiro:
+                    registrar_opcao_bairro(
+                        primeiro["logradouro"],
+                        primeiro["bairro"],
+                        primeiro["cidade"],
+                        primeiro.get("cep") or cep_encontrado,
+                    )
 
         melhor_cg = candidatos_geo[0]
         if bairro_dica:
@@ -141,11 +218,13 @@ def buscar_endereco_completo(endereco_bruto: str):
         if not cep_encontrado and melhor_cg.get("cep"):
             cep_encontrado = melhor_cg["cep"]
         if not bairro_oficial:
-            if melhor_cg.get("bairro") and (not bairro_dica or similaridade_bairros(bairro_dica, melhor_cg["bairro"]) >= 0.65):
+            if melhor_cg.get("bairro") and bairro_util(melhor_cg["bairro"]) and (
+                not bairro_dica or similaridade_bairros(bairro_dica, melhor_cg["bairro"]) >= 0.65
+            ):
                 bairro_oficial = melhor_cg["bairro"]
-            elif bairro_dica:
+            elif bairro_dica and bairro_util(bairro_dica):
                 bairro_oficial = bairro_dica.title()
-            elif melhor_cg.get("bairro"):
+            elif melhor_cg.get("bairro") and bairro_util(melhor_cg["bairro"]):
                 bairro_oficial = melhor_cg["bairro"]
         if melhor_cg.get("cidade"):
             cidade_oficial = melhor_cg["cidade"]
@@ -155,8 +234,13 @@ def buscar_endereco_completo(endereco_bruto: str):
         if dados_cep and dados_cep.get("logradouro"):
             if similaridade_ruas(rua, dados_cep["logradouro"]) >= 0.65 or not logradouro_oficial:
                 logradouro_oficial = formatar_via_com_prefixo(dados_cep["logradouro"], rua)
-                if dados_cep.get("bairro") and not eh_regional_bh(dados_cep["bairro"]):
-                    bairro_oficial = dados_cep["bairro"]
+                if dados_cep.get("bairro") and bairro_util(dados_cep["bairro"]):
+                    if (
+                        not numero_confirmado_viacep
+                        or not bairro_oficial
+                        or similaridade_bairros(bairro_oficial, dados_cep["bairro"]) >= 0.72
+                    ):
+                        bairro_oficial = dados_cep["bairro"]
                 if dados_cep.get("localidade"):
                     cidade_oficial = dados_cep["localidade"]
                 cep_encontrado = dados_cep.get("cep", cep_encontrado)
@@ -177,9 +261,9 @@ def buscar_endereco_completo(endereco_bruto: str):
         return end_mantido, "❌ RUA NÃO CONFIRMADA - CONFERIR", lat, lon, []
 
     nome_via_final = formatar_via_com_prefixo(logradouro_oficial, rua)
-    if bairro_oficial and not eh_regional_bh(bairro_oficial):
+    if bairro_oficial and bairro_util(bairro_oficial):
         bairro_final = bairro_oficial
-    elif bairro_dica and not eh_regional_bh(bairro_dica):
+    elif bairro_dica and bairro_util(bairro_dica):
         bairro_final = bairro_dica.title()
     else:
         bairro_final = "Bairro não identificado"
@@ -198,7 +282,17 @@ def buscar_endereco_completo(endereco_bruto: str):
     if lat is None or lon is None:
         lat, lon = geocodificar_endereco_rua(endereco_padronizado)
 
-    opcoes_bairros = list(mapa_bairros_opcoes.values()) if (not bairro_dica and len(mapa_bairros_opcoes) > 1) else []
+    opcoes_bairros = []
+    if not bairro_dica:
+        vistas = set()
+        for texto_op in mapa_bairros_opcoes.values():
+            chave_op = remover_acentos(texto_op.lower())
+            if chave_op in vistas:
+                continue
+            vistas.add(chave_op)
+            opcoes_bairros.append(texto_op)
+        if len(opcoes_bairros) < 2:
+            opcoes_bairros = []
 
     if len(opcoes_bairros) > 1:
         status = f"⚠️ {len(opcoes_bairros)} BAIRROS ENCONTRADOS (ESCOLHER)"

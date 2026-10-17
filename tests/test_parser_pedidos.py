@@ -39,6 +39,15 @@ Ciclano
 Rua Serra do rola moca 381
 """
 
+TEXTO_BAIRRO_DEPOIS_DA_RUA = """
+Guilherme Xavier
+
+5g de silver haze
+
+Rua Bernardo Guimarães 1581
+Lourdes
+"""
+
 
 class VariosNomesMesmoEnderecoTest(unittest.TestCase):
     def test_endereco_no_topo_fica_um_pedido_com_o_primeiro_nome(self):
@@ -65,6 +74,15 @@ class VariosNomesMesmoEnderecoTest(unittest.TestCase):
         self.assertEqual(pedidos[1]["Cliente"], "CICLANO")
         self.assertIn("250", pedidos[0]["Endereco_Bruto"])
         self.assertIn("381", pedidos[1]["Endereco_Bruto"])
+
+    def test_bairro_depois_da_rua_nao_vira_outro_cliente(self):
+        pedidos = listar_pre_pedidos(TEXTO_BAIRRO_DEPOIS_DA_RUA, {})
+        self.assertEqual(len(pedidos), 1)
+        self.assertEqual(pedidos[0]["Cliente"], "GUILHERME XAVIER")
+        self.assertIn("1581", pedidos[0]["Endereco_Bruto"])
+        self.assertIn("Lourdes", pedidos[0]["Endereco_Bruto"])
+        self.assertIn("silver haze", pedidos[0]["Itens_Lidos"].lower())
+        self.assertNotIn("LOURDES", pedidos[0]["Cliente"])
 
 
 if __name__ == "__main__":

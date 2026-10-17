@@ -11,6 +11,7 @@ from gerador_rotas.dominio.endereco_texto import (
     eh_linha_produto_clara,
     eh_subtitulo_ou_divisoria,
     limpar_nome_cliente,
+    linha_pode_ser_bairro_informado,
     pode_ser_nome_cliente,
     separar_componentes_endereco,
 )
@@ -21,25 +22,35 @@ from gerador_rotas.geo.resolver_endereco import buscar_endereco_completo
 def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedor_padrao: str = "") -> list:
     linhas_endereco = []
     outras_linhas = []
+    linhas = [str(l).strip() for l in linhas_bloco]
+    i = 0
+    n = len(linhas)
 
-    for linha in linhas_bloco:
-        l_strip = linha.strip()
+    while i < n:
+        l_strip = linhas[i]
         if not l_strip or eh_subtitulo_ou_divisoria(l_strip):
+            i += 1
             continue
 
         if re.match(r"^(mercadoria|itens?|produtos?)\s*[:\-]", remover_acentos(l_strip.lower())):
             item_limpo = re.sub(r"^(mercadoria|itens?|produtos?)\s*[:\-]\s*", "", l_strip, flags=re.IGNORECASE).strip()
             if item_limpo:
                 outras_linhas.append(("ITEM", item_limpo))
+            i += 1
             continue
 
         if re.match(r"^(cliente|nome|pedido|ped)\s*[:\-]", remover_acentos(l_strip.lower())):
             outras_linhas.append(("NOME", limpar_nome_cliente(l_strip)))
+            i += 1
             continue
 
         if eh_linha_endereco(l_strip, locais_dict):
             linhas_endereco.append(l_strip)
         elif linhas_endereco and eh_complemento_pos_endereco(l_strip, locais_dict):
+            linhas_endereco[-1] = f"{linhas_endereco[-1]}, {l_strip}"
+        elif linhas_endereco and linha_pode_ser_bairro_informado(
+            l_strip, linhas[i + 1] if i + 1 < n else "", locais_dict
+        ):
             linhas_endereco[-1] = f"{linhas_endereco[-1]}, {l_strip}"
         elif eh_linha_produto_clara(l_strip, locais_dict):
             outras_linhas.append(("ITEM", l_strip))
@@ -47,6 +58,7 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
             outras_linhas.append(("NOME", limpar_nome_cliente(l_strip)))
         else:
             outras_linhas.append(("ITEM", l_strip))
+        i += 1
 
     if not linhas_endereco:
         return []
@@ -170,12 +182,16 @@ def listar_pre_pedidos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str
                     bloco_atual.append(linha)
                     i += 1
                     continue
-                else:
-                    blocos.append(bloco_atual)
-                    bloco_atual = [linha]
-                    ja_tem_endereco_no_bloco = False
+                seguinte = linhas_cruas[i + 1] if (i + 1) < n else ""
+                if linha_pode_ser_bairro_informado(linha, seguinte, locais_dict):
+                    bloco_atual.append(linha)
                     i += 1
                     continue
+                blocos.append(bloco_atual)
+                bloco_atual = [linha]
+                ja_tem_endereco_no_bloco = False
+                i += 1
+                continue
             bloco_atual.append(linha)
             i += 1
         if bloco_atual:

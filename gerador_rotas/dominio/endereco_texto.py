@@ -126,6 +126,31 @@ def eh_complemento_pos_endereco(linha: str, locais_dict: dict = None) -> bool:
         return True
     return False
 
+def linha_pode_ser_bairro_informado(linha: str, linha_seguinte: str = "", locais_dict: dict = None) -> bool:
+    """Linha curta logo depois da rua, sem produto em seguida, é o bairro.
+
+    «Lourdes» no fim do pedido é o bairro. «Vinicius» seguido de «2 g md» é o cliente.
+    """
+    bruta = str(linha or "").strip()
+    limpa = remover_acentos(bruta.lower())
+    if not limpa or eh_subtitulo_ou_divisoria(bruta):
+        return False
+    if eh_linha_endereco(bruta, locais_dict) or eh_linha_produto_clara(bruta, locais_dict):
+        return False
+    if texto_parece_produto_cadastrado(bruta, locais_dict):
+        return False
+    if re.search(r"\d", bruta):
+        return False
+    if re.match(r"^(cliente|nome|pedido|ped|mercadoria|itens?|produtos?|endereco|end\.?)\s*[:\-]", limpa):
+        return False
+    palavras = re.findall(r"[a-zA-ZÀ-ÿ]{2,}", bruta)
+    if not (1 <= len(palavras) <= 4) or len(bruta) > 40:
+        return False
+    seguinte = str(linha_seguinte or "").strip()
+    if seguinte and (eh_linha_produto_clara(seguinte, locais_dict) or texto_parece_produto_cadastrado(seguinte, locais_dict)):
+        return False
+    return True
+
 def limpar_nome_cliente(linha: str) -> str:
     limpa = re.sub(r"^(cliente|nome|pedido|ped)\s*[:\-]?\s+", "", linha.strip(), flags=re.IGNORECASE)
     return limpa.strip(" .,-:").upper()
@@ -228,6 +253,14 @@ def eh_regional_bh(nome_b: str) -> bool:
         return False
     return remover_acentos(nome_b.lower()).strip() in REGIONAIS_BH
 
+def eh_nome_de_cidade(nome: str) -> bool:
+    if not nome:
+        return False
+    n = remover_acentos(str(nome).lower()).strip()
+    if n in CIDADES_RMBH:
+        return True
+    return any(n == remover_acentos(oficial.lower()) for oficial in MAPA_NOMES_CIDADES.values())
+
 def formatar_via_com_prefixo(nome_via: str, rua_original_usuario: str = "") -> str:
     via = str(nome_via).strip()
     if not via:
@@ -247,12 +280,14 @@ def formatar_via_com_prefixo(nome_via: str, rua_original_usuario: str = "") -> s
     return f"Rua {via}"
 
 def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> bool:
-    if not numero_str or not complemento_viacep:
+    if not numero_str:
         return True
     try:
         num = int(re.sub(r"\D", "", numero_str))
     except ValueError:
         return True
+    if not complemento_viacep or not str(complemento_viacep).strip():
+        return False
 
     comp = remover_acentos(complemento_viacep.lower())
     if "lado par" in comp and (num % 2 != 0):
@@ -270,4 +305,8 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
     m_fim = re.search(r"de\s+(\d+)(?:/\d+)?\s+ao\s+fim", comp)
     if m_fim:
         return num >= int(m_fim.group(1))
-    return True
+
+    numeros = [int(n) for n in re.findall(r"\d+", comp)]
+    if numeros:
+        return num in numeros
+    return False

@@ -21,7 +21,7 @@ gerador-rotas/
       similaridade.py            # acentos e comparação de rua, bairro e produto
       endereco_texto.py          # separar rua, número, bairro e cidade; classificar linhas
       produtos.py                # item do pedido -> Local 1–4 e quantidade de pacotes
-      parser_pedidos.py          # texto colado -> um pedido por endereço; vários nomes ficam no primeiro
+      parser_pedidos.py          # texto colado -> um pedido por endereço; bairro depois da rua fica no endereço
     geo/
       cep.py                     # ViaCEP, BrasilAPI e OpenCEP
       bairro.py                  # achar o bairro pelo nome, sem coordenada gravada
@@ -43,7 +43,8 @@ gerador-rotas/
       pagina_etiquetas.py        # seleção e download do PDF
   tests/
     test_bairro.py               # bairro certo, rua homónima e falha parcial das fontes
-    test_parser_pedidos.py       # vários nomes no mesmo endereço viram um pedido
+    test_parser_pedidos.py       # vários nomes no mesmo endereço viram um pedido; bairro depois da rua não vira cliente
+    test_faixa_bairro.py         # número só entra na faixa do ViaCEP; cidade não é bairro
     test_etiquetas_endereco.py   # etiqueta usa o endereço completo quando a busca confirma
     test_planejador.py           # cota, ordem aberta, PRIMEIRO e ÚLTIMO
 ```
@@ -75,7 +76,7 @@ Texto e regras que não dependem de internet nem de Streamlit, salvo o parser, q
 | `similaridade.py` | Normaliza acento e mede se duas ruas, dois bairros ou dois produtos são o mesmo |
 | `endereco_texto.py` | Decide se uma linha é endereço, produto, complemento ou nome. Separa rua, número, bairro e cidade. `dentro_perimetro_rmbh` limita o resultado a BH e arredores |
 | `produtos.py` | Compara os itens colados com os produtos cadastrados e devolve quais locais (1 a 4) entram no pedido. Isso só muda a contagem de pacotes |
-| `parser_pedidos.py` | Parte o texto colado em pedidos, resolve os endereços em paralelo e monta a linha `NOME [VENDEDOR] (NPCT)`. Vários nomes no mesmo endereço viram um pedido só, com o primeiro nome e todos os itens |
+| `parser_pedidos.py` | Parte o texto colado em pedidos, resolve os endereços em paralelo e monta a linha `NOME [VENDEDOR] (NPCT)`. Vários nomes no mesmo endereço viram um pedido só, com o primeiro nome e todos os itens. Uma linha curta logo depois da rua, sem produto na linha seguinte, entra no endereço como bairro (por exemplo «Lourdes»), e não como outro cliente |
 
 ### `geo/`
 
@@ -83,10 +84,10 @@ Tudo o que transforma texto de lugar em latitude e longitude.
 
 | Ficheiro | Função |
 |---|---|
-| `cep.py` | Consulta CEP direto e busca de logradouro no ViaCEP com tolerância de grafia |
+| `cep.py` | Consulta CEP direto e busca de logradouro no ViaCEP com tolerância de grafia. Rua com uma palavra a mais (Cova da Iriá para quem digitou Iriba) não passa |
 | `bairro.py` | Consulta ArcGIS, Photon e Nominatim em paralelo. Aceita o candidato só se o nome bater e o tipo for bairro, não rua. «Não encontrado» só vale quando as três fontes responderam |
 | `geocodificadores.py` | Cache do bairro, geocodificação simples de uma rua e lista de candidatos de várias fontes |
-| `resolver_endereco.py` | Junta ViaCEP e as outras fontes até devolver endereço padronizado, status, lat, lon e bairros ambíguos |
+| `resolver_endereco.py` | Junta ViaCEP e as outras fontes até devolver endereço padronizado, status, lat, lon e bairros ambíguos. A lista de bairros só abre quando o número cai em mais de uma faixa real. Nome de cidade e trechos antigos da mesma rua não entram nessa lista |
 | `partida.py` | Entrada da sidebar: CEP, rua com número, ou nome de bairro |
 
 Não existe tabela de coordenadas fixas. Se nenhuma fonte confirmar o lugar, a função devolve `None`. O centro de Belo Horizonte não é usado como substituto.
@@ -128,10 +129,10 @@ A geocodificação do cliente acontece antes do botão de gerar. O botão usa la
    - Nome de bairro vai a `buscar_coordenada_bairro` → `localizar_bairro`.
    - O campo fica na chave `campo_ponto_partida`. Se o texto for o do JSON, a sidebar desenha só ✅ ou ❌. Se o utilizador alterar o texto, o ícone some e entra o aviso com o nome encontrado ou o motivo da falha.
 3. O utilizador cola o texto e carrega em **Adicionar à Lista**.
-4. `listar_pre_pedidos` parte o texto em blocos. Sem cabeçalho de WhatsApp, um endereço no topo seguido de nomes e itens é um bloco só: a continuação sem endereço volta para o bloco do endereço. Dentro do bloco, o cliente é o primeiro nome; os nomes seguintes não abrem pedido novo e os itens deles entram no mesmo pedido. Dois endereços diferentes continuam dois pedidos. `extrair_pedidos_brutos` geocodifica essa lista.
+4. `listar_pre_pedidos` parte o texto em blocos. Sem cabeçalho de WhatsApp, um endereço no topo seguido de nomes e itens é um bloco só: a continuação sem endereço volta para o bloco do endereço. Dentro do bloco, o cliente é o primeiro nome; os nomes seguintes não abrem pedido novo e os itens deles entram no mesmo pedido. Dois endereços diferentes continuam dois pedidos. A linha imediatamente depois da rua, se for curta e a próxima não for produto, é o bairro e vai para o endereço. `extrair_pedidos_brutos` geocodifica essa lista.
 5. `identificar_locais_dos_itens` marca os locais de produto e a quantidade de pacotes. Esses locais não viram parada.
 6. `resolver_enderecos_em_paralelo` chama `buscar_endereco_completo` para cada endereço único (até 12 em paralelo).
-7. Cada linha da tabela fica com `Endereco`, `Status`, `Lat`, `Lon` e, se a rua existir em mais de um bairro, `Opcoes_Endereco`.
+7. Cada linha da tabela fica com `Endereco`, `Status`, `Lat`, `Lon` e, se o número existir de fato em mais de um bairro, `Opcoes_Endereco`. O nome da cidade (Belo Horizonte) não conta como bairro. Trechos da mesma rua com outro número, e bairros antigos do mesmo ponto, também não abrem essa escolha.
 8. Endereço sem coordenada confiável permanece na lista com aviso. Não recebe o centro da cidade.
 
 ### Clique em Gerar e Otimizar Rotas
@@ -201,7 +202,7 @@ Local 1 a 4 classificam itens e contam pacotes. A moto sai só do ponto de parti
 ### Coordenadas
 
 - Bairro de partida: `geo/bairro.py`. Rejeita rua homónima (por exemplo a Rua Santa Maria Goretti, no Barreiro) e exige que o nome devolvido corresponda ao texto digitado. Se alguma das três fontes não responder, o resultado é falha de rede, não «bairro inexistente».
-- Endereço de cliente: `geo/resolver_endereco.py`.
+- Endereço de cliente: `geo/resolver_endereco.py`. O número só confirma o bairro quando cabe na faixa do ViaCEP (`de 1401 a 1949`, `até 389`, `de 2881 ao fim`, ou um número solto como `911`). Complemento vazio não vale para qualquer número. Se nenhuma faixa contém o número, o sistema fica com um endereço só e não lista os outros trechos da rua. A escolha de bairro aparece só quando duas faixas contêm o mesmo número, ou quando duas fontes devolvem a mesma rua e o mesmo número em pontos a mais de 400 m um do outro.
 - Perímetro aceite: latitude de -20,40 a -19,40 e longitude de -44,60 a -43,40.
 - Falha de geocodificação: `lat`/`lon` ficam vazios e o status deixa de ser `✅ OK`. Não usar `-19.9167, -43.9345` como fallback.
 - Maria Goretti, quando o texto é o bairro, fica em torno de `-19.863, -43.909`, na regional Nordeste. Um pino perto de Cidade Nova (`-19.881, -43.918`) significa que a coordenada fixa antiga voltou.
@@ -229,7 +230,7 @@ Chaves principais em `estado.py`: `df_pedidos`, `df_pedidos_editados`, `df_rotas
 - Testes de ordem, de bairro e de leitura de pedido não precisam de Streamlit nem de rede: `tests/test_planejador.py`, `tests/test_bairro.py` e `tests/test_parser_pedidos.py`. O parser é coberto por `listar_pre_pedidos`, antes da geocodificação.
 
 ```text
-python -m unittest tests.test_planejador tests.test_bairro tests.test_parser_pedidos tests.test_etiquetas_endereco
+python -m unittest tests.test_planejador tests.test_bairro tests.test_parser_pedidos tests.test_etiquetas_endereco tests.test_faixa_bairro
 ```
 
 ### Dependências de sentido único
