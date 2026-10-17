@@ -17,6 +17,20 @@ def formatar_endereco_para_etiqueta(endereco_bruto: str) -> str:
     end = re.sub(r"\s+", " ", end).strip(" ,")
     return end
 
+
+def endereco_etiqueta_precisa_busca(endereco: str) -> bool:
+    """Rua solta, sem CEP, ainda precisa da mesma busca usada nas rotas."""
+    texto = str(endereco or "").strip()
+    if not texto:
+        return False
+    return re.search(r"\b\d{5}-?\d{3}\b", texto) is None
+
+
+def endereco_de_etiqueta_resolvido(endereco_bruto: str, end_form: str, status: str) -> str:
+    if str(end_form or "").strip() and not str(status).startswith("❌"):
+        return formatar_endereco_para_etiqueta(end_form)
+    return formatar_endereco_para_etiqueta(endereco_bruto)
+
 def extrair_etiquetas_de_texto_rota(texto_colado: str) -> pd.DataFrame:
     linhas = [l.strip() for l in texto_colado.splitlines()]
     rota_atual = "GERAL"

@@ -44,6 +44,7 @@ gerador-rotas/
   tests/
     test_bairro.py               # bairro certo, rua homónima e falha parcial das fontes
     test_parser_pedidos.py       # vários nomes no mesmo endereço viram um pedido
+    test_etiquetas_endereco.py   # etiqueta usa o endereço completo quando a busca confirma
     test_planejador.py           # cota, ordem aberta, PRIMEIRO e ÚLTIMO
 ```
 
@@ -103,7 +104,7 @@ Não existe tabela de coordenadas fixas. Se nenhuma fonte confirmar o lugar, a f
 
 | Ficheiro | Função |
 |---|---|
-| `parser.py` | Converte a tabela de rotas, ou um texto colado no mesmo formato, em linhas de etiqueta |
+| `parser.py` | Converte a tabela de rotas, ou um texto colado no mesmo formato, em linhas de etiqueta. Rua sem CEP é marcada para a mesma busca de endereço completo das rotas |
 | `pdf.py` | Procura `Etiqueta.pdf` na raiz do repositório e desenha nome e endereço em cada página 10×15 cm |
 
 ### Ficheiros ao lado do pacote
@@ -170,8 +171,9 @@ O botão está em `ui/pagina_rotas.py`. Só habilita se a soma das cotas for igu
 
 1. **Gerar Etiquetas das Rotas Criadas** chama `importar_etiquetas_das_rotas_calculadas`.
 2. `estado.atualizar_base_etiquetas` guarda a tabela e `app.py` muda para o módulo de etiquetas.
-3. Também dá para colar o texto exportado: `extrair_etiquetas_de_texto_rota` lê pares de endereço e nome debaixo de um título `ROTA ...`.
-4. `gerar_pdf_etiquetas_10x15` abre `Etiqueta.pdf` na raiz, escreve destinatário e endereço e devolve um único PDF para download.
+3. Também dá para colar o texto exportado: `extrair_etiquetas_de_texto_rota` lê pares de endereço e nome debaixo de um título `ROTA ...`. Endereço sem CEP passa por `buscar_endereco_completo`, a mesma função das rotas, para a etiqueta não ficar só com a rua.
+4. **Adicionar Cliente Avulso** também chama `buscar_endereco_completo`. Se a busca confirmar, a tabela guarda o endereço padronizado (rua, número, bairro, cidade e CEP). Se falhar, entra o texto digitado. Se a rua existir em mais de um bairro, a etiqueta guarda `Opcoes_Endereco` e a tela avisa, com a mesma escolha de bairro das rotas. Confirmar grava o endereço escolhido e tira o aviso.
+5. `gerar_pdf_etiquetas_10x15` abre `Etiqueta.pdf` na raiz, escreve destinatário e endereço e devolve um único PDF para download.
 
 ## 4. O que é fundamental para mexer no projeto
 
@@ -227,7 +229,7 @@ Chaves principais em `estado.py`: `df_pedidos`, `df_pedidos_editados`, `df_rotas
 - Testes de ordem, de bairro e de leitura de pedido não precisam de Streamlit nem de rede: `tests/test_planejador.py`, `tests/test_bairro.py` e `tests/test_parser_pedidos.py`. O parser é coberto por `listar_pre_pedidos`, antes da geocodificação.
 
 ```text
-python -m unittest tests.test_planejador tests.test_bairro tests.test_parser_pedidos
+python -m unittest tests.test_planejador tests.test_bairro tests.test_parser_pedidos tests.test_etiquetas_endereco
 ```
 
 ### Dependências de sentido único

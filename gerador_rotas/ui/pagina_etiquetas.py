@@ -1,19 +1,55 @@
+import json
 import os
 
 import pandas as pd
 import streamlit as st
 
+from gerador_rotas.dominio.parser_pedidos import resolver_enderecos_em_paralelo
 from gerador_rotas.estado import atualizar_base_etiquetas
 from gerador_rotas.etiquetas.parser import (
+    endereco_de_etiqueta_resolvido,
+    endereco_etiqueta_precisa_busca,
     extrair_etiquetas_de_texto_rota,
     formatar_endereco_para_etiqueta,
     importar_etiquetas_das_rotas_calculadas,
     limpar_nome_para_etiqueta,
 )
+from gerador_rotas.geo.resolver_endereco import buscar_endereco_completo
 from gerador_rotas.etiquetas.pdf import (
     gerar_pdf_etiquetas_10x15,
     localizar_modelo_pdf_no_repositorio,
 )
+
+
+def _opcoes_bairro(opcoes) -> list:
+    if not isinstance(opcoes, list) or len(opcoes) < 2:
+        return []
+    return [str(op).strip() for op in opcoes if str(op).strip()]
+
+
+def _completar_enderecos_das_etiquetas(df):
+    if df.empty or "Endereco Original" not in df.columns:
+        return df
+    if "Opcoes_Endereco" not in df.columns:
+        df["Opcoes_Endereco"] = "[]"
+    pendentes = [
+        str(end).strip()
+        for end in df["Endereco Original"]
+        if endereco_etiqueta_precisa_busca(end)
+    ]
+    if not pendentes:
+        return df
+    mapa = resolver_enderecos_em_paralelo(pendentes)
+    for idx, row in df.iterrows():
+        bruto = str(row["Endereco Original"]).strip()
+        if bruto not in mapa:
+            continue
+        end_form, status, _, _, opcoes = mapa[bruto]
+        df.at[idx, "Endereco Etiqueta"] = endereco_de_etiqueta_resolvido(bruto, end_form, status)
+        if str(end_form or "").strip() and not str(status).startswith("❌"):
+            df.at[idx, "Endereco Original"] = end_form
+        df.at[idx, "Opcoes_Endereco"] = json.dumps(_opcoes_bairro(opcoes), ensure_ascii=False)
+    return df
 
 
 def render_pagina_etiquetas():
@@ -52,7 +88,10 @@ def render_pagina_etiquetas():
 
     if st.button("➕ Extrair e Adicionar Etiquetas da Lista", type="primary", use_container_width=True):
         if texto_lista_etiquetas.strip():
-            df_novas_etiq = extrair_etiquetas_de_texto_rota(texto_lista_etiquetas)
+            with st.spinner("Localizando endereços completos..."):
+                df_novas_etiq = _completar_enderecos_das_etiquetas(
+                    extrair_etiquetas_de_texto_rota(texto_lista_etiquetas)
+                )
             if not df_novas_etiq.empty:
                 df_atual_etiq = st.session_state.get("df_etiquetas_editadas", st.session_state["df_etiquetas"])
                 if df_atual_etiq.empty:
@@ -78,15 +117,21 @@ def render_pagina_etiquetas():
 
         if st.button("Adicionar Cliente Avulso", use_container_width=True):
             if m_nome.strip() and m_end.strip():
+                with st.spinner("Localizando endereço completo..."):
+                    end_form, status, _, _, opcoes = buscar_endereco_completo(m_end.strip())
+                endereco_final = endereco_de_etiqueta_resolvido(m_end, end_form, status)
+                if str(status).startswith("❌"):
+                    st.toast("Não foi possível completar esse endereço. Ele entrou como foi digitado.")
                 df_atual_etiq = st.session_state.get("df_etiquetas_editadas", st.session_state["df_etiquetas"])
                 nova_linha = pd.DataFrame([{
                     "Imprimir": True,
                     "Rota": m_rota.strip().upper() or "AVULSO",
                     "Ordem": f"{len(df_atual_etiq) + 1}º",
                     "Nome Etiqueta": limpar_nome_para_etiqueta(m_nome),
-                    "Endereco Etiqueta": formatar_endereco_para_etiqueta(m_end),
+                    "Endereco Etiqueta": endereco_final,
                     "Nome Original": m_nome.strip().upper(),
-                    "Endereco Original": m_end.strip()
+                    "Endereco Original": end_form.strip() if end_form and not str(status).startswith("❌") else m_end.strip(),
+                    "Opcoes_Endereco": json.dumps(_opcoes_bairro(opcoes), ensure_ascii=False),
                 }])
                 df_comb = pd.concat([df_atual_etiq, nova_linha], ignore_index=True) if not df_atual_etiq.empty else nova_linha
                 atualizar_base_etiquetas(df_comb)
@@ -104,6 +149,40 @@ def render_pagina_etiquetas():
             df_base_e = st.session_state["df_etiquetas"]
             if "Imprimir" not in df_base_e.columns:
                 df_base_e.insert(0, "Imprimir", True)
+            if "Opcoes_Endereco" not in df_base_e.columns:
+                df_base_e["Opcoes_Endereco"] = "[]"
+
+            linhas_ambiguas = []
+            for idx_amb, row_amb in df_base_e.iterrows():
+                try:
+                    opcoes_lista = json.loads(row_amb.get("Opcoes_Endereco", "[]") or "[]")
+                except Exception:
+                    opcoes_lista = []
+                if len(opcoes_lista) > 1:
+                    linhas_ambiguas.append((idx_amb, row_amb.get("Nome Etiqueta") or row_amb.get("Nome Original"), opcoes_lista))
+
+            if linhas_ambiguas:
+                st.warning(
+                    f"🏘️ **Atenção: {len(linhas_ambiguas)} etiqueta(s) possuem rua que existe em mais de um bairro!** "
+                    "Escolha abaixo qual é o bairro correto:"
+                )
+                for idx_amb, nome_cli_amb, opcoes_lista in linhas_ambiguas:
+                    col_sel, col_btn_amb = st.columns([3, 1])
+                    with col_sel:
+                        escolha_end = st.selectbox(
+                            f"Escolha o bairro/endereço correto para **{nome_cli_amb}**:",
+                            options=opcoes_lista,
+                            key=f"sel_amb_etiq_{idx_amb}",
+                        )
+                    with col_btn_amb:
+                        st.write("")
+                        if st.button(f"✅ Confirmar ({nome_cli_amb})", key=f"btn_amb_etiq_{idx_amb}", use_container_width=True):
+                            df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
+                            df_sync.at[idx_amb, "Endereco Etiqueta"] = formatar_endereco_para_etiqueta(escolha_end)
+                            df_sync.at[idx_amb, "Endereco Original"] = escolha_end
+                            df_sync.at[idx_amb, "Opcoes_Endereco"] = "[]"
+                            atualizar_base_etiquetas(df_sync)
+                            st.rerun()
 
             rotas_presentes = sorted(list(df_base_e["Rota"].dropna().unique()))
 
@@ -158,6 +237,9 @@ def render_pagina_etiquetas():
             )
 
             df_etiq_edit["Nome Etiqueta"] = df_etiq_edit["Nome Etiqueta"].astype(str).str.upper()
+            for coluna_oculta in ("Opcoes_Endereco", "Endereco Original", "Nome Original"):
+                if coluna_oculta not in df_etiq_edit.columns and coluna_oculta in df_base_e.columns:
+                    df_etiq_edit[coluna_oculta] = df_base_e[coluna_oculta].values
             st.session_state["df_etiquetas_editadas"] = df_etiq_edit
 
             df_selecionadas = df_etiq_edit[df_etiq_edit["Imprimir"]].copy()
