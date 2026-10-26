@@ -58,7 +58,7 @@ def render_pagina_rotas(partida_ok, desc_partida_validada, lat_partida, lon_part
         )
     )
     vendedor_lote = st.text_input(
-        "Sigla do Vendedor `[ ]` para os pedidos acima:",
+        "Sigla do Vendedor `[ ]` se o texto não tiver Encaminhado de:",
         key=f"vendedor_lote_{st.session_state['contador_form']}",
         placeholder="Ex: 2T, VG, NK"
     )

@@ -57,6 +57,38 @@ def iniciar_estado():
     if "avisos_rotas" not in st.session_state:
         st.session_state["avisos_rotas"] = []
 
+    if "df_otimizador" not in st.session_state:
+        st.session_state["df_otimizador"] = pd.DataFrame()
+    if "df_otimizador_editado" not in st.session_state:
+        st.session_state["df_otimizador_editado"] = pd.DataFrame()
+    if "versao_editor_otimizador" not in st.session_state:
+        st.session_state["versao_editor_otimizador"] = 0
+    if "nomes_rotas_otimizador" not in st.session_state:
+        st.session_state["nomes_rotas_otimizador"] = []
+    if "resumo_km_otimizador" not in st.session_state:
+        st.session_state["resumo_km_otimizador"] = {}
+    if "coord_partida_otimizador" not in st.session_state:
+        st.session_state["coord_partida_otimizador"] = None
+    if "geometrias_otimizador" not in st.session_state:
+        st.session_state["geometrias_otimizador"] = {}
+    if "avisos_otimizador" not in st.session_state:
+        st.session_state["avisos_otimizador"] = []
+    if "contador_form_otimizador" not in st.session_state:
+        st.session_state["contador_form_otimizador"] = 0
+
+
+def limpar_otimizador():
+    """Zera as rotas montadas no otimizador."""
+    st.session_state["df_otimizador"] = pd.DataFrame()
+    st.session_state["df_otimizador_editado"] = pd.DataFrame()
+    st.session_state["versao_editor_otimizador"] = st.session_state.get("versao_editor_otimizador", 0) + 1
+    st.session_state["nomes_rotas_otimizador"] = []
+    st.session_state["resumo_km_otimizador"] = {}
+    st.session_state["coord_partida_otimizador"] = None
+    st.session_state["geometrias_otimizador"] = {}
+    st.session_state["avisos_otimizador"] = []
+    st.session_state["contador_form_otimizador"] = st.session_state.get("contador_form_otimizador", 0) + 1
+
 
 def atualizar_base_pedidos(novo_df: pd.DataFrame):
     df_limpo = novo_df.reset_index(drop=True).copy()

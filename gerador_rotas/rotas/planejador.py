@@ -7,7 +7,12 @@ from itertools import permutations
 
 import pandas as pd
 
-from gerador_rotas.rotas.matriz import obter_geometria_osrm, obter_matriz_osrm
+from gerador_rotas.rotas.matriz import (
+    distancia_km,
+    obter_geometria_osrm,
+    obter_matriz_osrm,
+    obter_trajeto_osrm,
+)
 
 _INF = 10**15
 
@@ -472,6 +477,40 @@ def gerar_rotas(df: pd.DataFrame, nomes: list, cotas: list, lat: float, lon: flo
             avisos.append("O traçado da rua não carregou em alguma rota. O mapa liga as paradas em linha reta.")
 
     return _montar_saida(base, nomes, listas), resumo, (lat, lon), geometrias, avisos
+
+
+def medir_rotas_na_ordem(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: list, lat_s: float, lon_s: float):
+    """Km e traçado da ordem atual. Não troca a sequência nem o endereço."""
+    avisos = []
+    resumo = {}
+    geometrias = {}
+    alguma_reta = False
+    base = df_com_rotas.copy().reset_index(drop=True)
+
+    for nome in ordem_nomes_rotas:
+        indices = [i for i in base.index if str(base.at[i, "Rota"]) == nome and _tem_coord(base.loc[i])]
+        pontos = [(float(lat_s), float(lon_s))]
+        for i in indices:
+            pontos.append((float(base.at[i, "Lat"]), float(base.at[i, "Lon"])))
+        if len(pontos) < 2:
+            resumo[nome] = 0.0
+            geometrias[nome] = [[p[0], p[1]] for p in pontos]
+            continue
+        geom, metros = obter_trajeto_osrm(pontos)
+        if geom and metros is not None:
+            geometrias[nome] = geom
+            resumo[nome] = round(metros / 1000.0, 1)
+            continue
+        alguma_reta = True
+        geometrias[nome] = [[p[0], p[1]] for p in pontos]
+        km = 0.0
+        for a in range(len(pontos) - 1):
+            km += distancia_km(pontos[a][0], pontos[a][1], pontos[a + 1][0], pontos[a + 1][1]) * 1.35
+        resumo[nome] = round(km, 1)
+
+    if alguma_reta:
+        avisos.append("O traçado da rua não carregou em alguma rota. O mapa liga as paradas em linha reta.")
+    return resumo, geometrias, avisos
 
 
 def recalcular_todas_as_rotas(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: list, lat_s: float, lon_s: float, buscar_geometria: bool = True):

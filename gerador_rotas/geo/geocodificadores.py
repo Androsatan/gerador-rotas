@@ -101,9 +101,12 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                 via_arc = formatar_via_com_prefixo(via_arc, rua)
                 nbr = (at.get("Nbrhd") or "").strip()
                 dist = (at.get("District") or "").strip()
-                bairro_c = nbr if (nbr and not eh_regional_bh(nbr) and not eh_nome_de_cidade(nbr)) else ""
-                if not bairro_c and dist and not eh_regional_bh(dist) and not eh_nome_de_cidade(dist):
+                if nbr and not eh_nome_de_cidade(nbr):
+                    bairro_c = nbr
+                elif dist and not eh_regional_bh(dist) and not eh_nome_de_cidade(dist):
                     bairro_c = dist
+                else:
+                    bairro_c = ""
                 cid_c = (at.get("City") or cidade).strip()
                 cep_raw = re.sub(r"\D", "", str(at.get("Postal", "")))
                 cep_c = f"{cep_raw[:5]}-{cep_raw[5:]}" if len(cep_raw) == 8 else ""
@@ -133,8 +136,13 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                     lon_p, lat_p = float(coords[0]), float(coords[1])
                     if not dentro_perimetro_rmbh(lat_p, lon_p):
                         continue
-                    b_ph = props.get("suburb") or props.get("district") or props.get("locality") or ""
-                    if eh_regional_bh(b_ph) or eh_nome_de_cidade(b_ph):
+                    suburb_ph = props.get("suburb") or props.get("neighbourhood") or ""
+                    district_ph = props.get("district") or props.get("locality") or ""
+                    if suburb_ph and not eh_nome_de_cidade(suburb_ph):
+                        b_ph = suburb_ph
+                    elif district_ph and not eh_regional_bh(district_ph) and not eh_nome_de_cidade(district_ph):
+                        b_ph = district_ph
+                    else:
                         b_ph = ""
                     cid_ph = props.get("city") or props.get("town") or cidade
                     cep_raw = re.sub(r"\D", "", str(props.get("postcode", "")))
@@ -170,7 +178,7 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                     if not via_n or similaridade_ruas(rua, via_n) < 0.68:
                         continue
                     b_n = ed.get("suburb") or ed.get("neighbourhood") or ed.get("quarter") or ""
-                    if eh_regional_bh(b_n) or eh_nome_de_cidade(b_n):
+                    if eh_nome_de_cidade(b_n):
                         b_n = ""
                     cid_n = ed.get("city") or ed.get("town") or ed.get("municipality") or cidade
                     cep_raw = re.sub(r"\D", "", str(ed.get("postcode", "")))

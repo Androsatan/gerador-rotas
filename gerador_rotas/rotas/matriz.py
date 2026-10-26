@@ -75,23 +75,45 @@ def obter_matriz_osrm(pontos_lat_lon: list):
     return dur, dist, "estimada"
 
 
+def _rota_osrm(pontos_lat_lon: list):
+    coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in pontos_lat_lon)
+    url = (
+        "http://router.project-osrm.org/route/v1/driving/"
+        f"{coords}?overview=full&geometries=geojson"
+    )
+    resp = requests.get(url, timeout=8)
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    if data.get("code") != "Ok" or not data.get("routes"):
+        return None
+    return data["routes"][0]
+
+
 def obter_geometria_osrm(pontos_lat_lon: list):
     """Linha da rua em [lat, lon]. None se o serviço não responder."""
     if len(pontos_lat_lon) < 2:
         return [[p[0], p[1]] for p in pontos_lat_lon]
     try:
-        coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in pontos_lat_lon)
-        url = (
-            "http://router.project-osrm.org/route/v1/driving/"
-            f"{coords}?overview=full&geometries=geojson"
-        )
-        resp = requests.get(url, timeout=8)
-        if resp.status_code != 200:
+        rota = _rota_osrm(pontos_lat_lon)
+        if not rota:
             return None
-        data = resp.json()
-        if data.get("code") != "Ok" or not data.get("routes"):
-            return None
-        linha = data["routes"][0]["geometry"]["coordinates"]
+        linha = rota["geometry"]["coordinates"]
         return [[float(c[1]), float(c[0])] for c in linha]
     except Exception:
         return None
+
+
+def obter_trajeto_osrm(pontos_lat_lon: list):
+    """(linha [lat, lon], metros) na ordem recebida. (None, None) se o serviço falhar."""
+    if len(pontos_lat_lon) < 2:
+        return [[p[0], p[1]] for p in pontos_lat_lon], 0.0
+    try:
+        rota = _rota_osrm(pontos_lat_lon)
+        if not rota or rota.get("distance") is None:
+            return None, None
+        linha = rota["geometry"]["coordinates"]
+        geom = [[float(c[1]), float(c[0])] for c in linha]
+        return geom, float(rota["distance"])
+    except Exception:
+        return None, None

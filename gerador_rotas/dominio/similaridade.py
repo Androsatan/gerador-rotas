@@ -31,6 +31,31 @@ def similaridade_palavras(palavra_cliente: str, palavra_cadastro: str) -> float:
         return SequenceMatcher(None, palavra_cliente, palavra_cadastro).ratio()
     return 0.0
 
+_TIPOS_LOGRADOURO = (
+    ("avenida", ("avenida", "av")),
+    ("alameda", ("alameda", "al")),
+    ("praca", ("praca",)),
+    ("travessa", ("travessa", "tv")),
+    ("rodovia", ("rodovia",)),
+    ("estrada", ("estrada",)),
+    ("beco", ("beco",)),
+    ("anel", ("anel",)),
+    ("rua", ("rua", "r")),
+)
+
+
+def tipo_logradouro(nome: str) -> str:
+    """Avenida, beco e rua são vias diferentes. Sem tipo escrito, devolve vazio."""
+    palavras = re.findall(r"[a-z0-9]+", remover_acentos(str(nome or "").lower()))
+    if not palavras:
+        return ""
+    primeiro = palavras[0]
+    for canonico, apelidos in _TIPOS_LOGRADOURO:
+        if primeiro in apelidos:
+            return canonico
+    return ""
+
+
 def tokens_nucleo_rua(nome_rua: str) -> list:
     limpo = remover_acentos(str(nome_rua).lower())
     palavras = re.findall(r"[a-z0-9]+", limpo)
@@ -40,6 +65,11 @@ def tokens_nucleo_rua(nome_rua: str) -> list:
     return nucleo
 
 def similaridade_ruas(rua_digitada: str, rua_candidata: str) -> float:
+    tipo_digitado = tipo_logradouro(rua_digitada)
+    tipo_candidato = tipo_logradouro(rua_candidata)
+    if tipo_digitado and tipo_candidato and tipo_digitado != tipo_candidato:
+        return 0.0
+
     t_dig = tokens_nucleo_rua(rua_digitada)
     t_cand = tokens_nucleo_rua(rua_candidata)
     if not t_dig or not t_cand:

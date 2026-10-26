@@ -19,16 +19,67 @@ from gerador_rotas.dominio.produtos import identificar_locais_dos_itens
 from gerador_rotas.dominio.similaridade import remover_acentos
 from gerador_rotas.geo.resolver_endereco import buscar_endereco_completo
 
+_RE_ENCAMINHADO = re.compile(
+    r"^encaminhad[oa]\s+de\s*[:\-]?\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
+
+# Apelido como o Telegram mostra depois de "Encaminhado de" -> sigla do vendedor.
+_SIGLA_POR_ORIGEM = {
+    "dp": "DP",
+    "loirin dp": "DP",
+    "mcl": "MC",
+    "mc": "MC",
+    "2l": "2L",
+    "trust": "TR",
+    "tr": "TR",
+    "gd": "GD",
+    "bg": "BG",
+    "gaara bg": "BG",
+    "2k": "2K",
+    "chucky": "CK",
+    "ck": "CK",
+    "gb": "GB",
+}
+
+
+def sigla_do_encaminhado(linha: str):
+    """Sigla se a linha for «Encaminhado de …». None quando a linha é outra coisa.
+
+    String vazia significa que é encaminhamento, mas o remetente não está na tabela.
+    """
+    norm = remover_acentos(str(linha or "")).lower()
+    norm = re.sub(r"\s+", " ", norm).strip()
+    m = _RE_ENCAMINHADO.match(norm)
+    if not m:
+        return None
+    origem = m.group(1).strip(" .,-:")
+    if origem in _SIGLA_POR_ORIGEM:
+        return _SIGLA_POR_ORIGEM[origem]
+    for token in reversed(origem.split()):
+        if token in _SIGLA_POR_ORIGEM:
+            return _SIGLA_POR_ORIGEM[token]
+    return ""
+
+
 def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedor_padrao: str = "") -> list:
     linhas_endereco = []
     outras_linhas = []
     linhas = [str(l).strip() for l in linhas_bloco]
     i = 0
     n = len(linhas)
+    vendedor_encaminhado = ""
 
     while i < n:
         l_strip = linhas[i]
         if not l_strip or eh_subtitulo_ou_divisoria(l_strip):
+            i += 1
+            continue
+
+        sigla_enc = sigla_do_encaminhado(l_strip)
+        if sigla_enc is not None:
+            if sigla_enc:
+                vendedor_encaminhado = sigla_enc
             i += 1
             continue
 
@@ -87,9 +138,10 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
         resumo_itens = ", ".join(lista_it)
         if locais_detectados:
             resumo_itens += f" ➔ [{', '.join(locais_detectados)}]"
+        vendedor = vendedor_encaminhado or vendedor_padrao.upper().strip()
         pre_pedidos.append({
             "Cliente": nome_cli,
-            "Vendedor": vendedor_padrao.upper().strip(),
+            "Vendedor": vendedor,
             "Pacotes": qtd_pct,
             "Itens_Lidos": resumo_itens,
             "Endereco_Bruto": endereco_bruto_final

@@ -8,18 +8,32 @@ from gerador_rotas.dominio.constantes import (
     PREFIXOS_RUA,
     REGIONAIS_BH,
 )
-from gerador_rotas.dominio.similaridade import remover_acentos, similaridade_palavras
+from gerador_rotas.dominio.similaridade import (
+    remover_acentos,
+    similaridade_bairros,
+    similaridade_palavras,
+)
 
-def detectar_cidade_rmbh(texto: str, bairro_dica: str = "") -> str:
-    texto_norm = remover_acentos(texto.lower())
+def detectar_cidade_rmbh(texto: str, bairro_dica: str = None) -> str:
+    """Cidade escrita no texto ganha. O mapa de bairro só olha o bairro, não o nome da rua.
+
+    «Avenida Amazonas» não é o bairro Amazonas de Contagem. Sem bairro separado,
+    o texto inteiro vale: é o caso do ponto de partida «Eldorado».
+    """
+    texto_norm = remover_acentos(str(texto or "").lower())
     for cid in CIDADES_RMBH:
         if re.search(rf"\b{cid}\b", texto_norm):
             return MAPA_NOMES_CIDADES.get(cid, cid.title())
 
-    check_bairro = remover_acentos(f"{bairro_dica} {texto}".lower())
-    for b_rmbh, cid_rmbh in MAPA_BAIRROS_RMBH.items():
-        if re.search(rf"\b{re.escape(b_rmbh)}\b", check_bairro):
-            return cid_rmbh
+    if bairro_dica is None:
+        alvo = texto_norm
+    else:
+        alvo = remover_acentos(str(bairro_dica).lower())
+    alvo = alvo.strip()
+    if alvo:
+        for b_rmbh, cid_rmbh in MAPA_BAIRROS_RMBH.items():
+            if re.search(rf"\b{re.escape(b_rmbh)}\b", alvo):
+                return cid_rmbh
 
     return "Belo Horizonte"
 
@@ -122,9 +136,19 @@ def eh_complemento_pos_endereco(linha: str, locais_dict: dict = None) -> bool:
     for b_rmbh in MAPA_BAIRROS_RMBH:
         if re.search(rf"\b{re.escape(b_rmbh)}\b", limpa):
             return True
-    if "no gps" in limpa or "centro de " in limpa or re.match(r"^(jardim|vila|parque|conjunto|santa|sao|santo|padre|nossa senhora|vereda|planalto|providencia|camargos|caicara|barro preto|sion|serra|ipiranga|cidade nova|rio branco|bonsucesso)\b", limpa):
+    if "no gps" in limpa or "centro de " in limpa:
+        return True
+    # Tipo de lugar, não um bairro decorado. Qualquer nome curto cai na regra genérica da linha seguinte.
+    if re.match(r"^(jardim|jd\.?|vila|vl\.?|parque|pq\.?|conjunto|cj\.?|residencial|res\.?|setor|loteamento|nucleo|santa|santo|sao|nossa senhora)\b", limpa):
         return True
     return False
+
+def eh_linha_encaminhado(linha: str) -> bool:
+    """Linha «Encaminhado de …» do Telegram. Não é cliente, produto nem bairro."""
+    limpa = remover_acentos(str(linha or "")).lower()
+    limpa = re.sub(r"\s+", " ", limpa).strip()
+    return bool(re.match(r"^encaminhad[oa]\s+de\b", limpa))
+
 
 def linha_pode_ser_bairro_informado(linha: str, linha_seguinte: str = "", locais_dict: dict = None) -> bool:
     """Linha curta logo depois da rua, sem produto em seguida, é o bairro.
@@ -134,6 +158,8 @@ def linha_pode_ser_bairro_informado(linha: str, linha_seguinte: str = "", locais
     bruta = str(linha or "").strip()
     limpa = remover_acentos(bruta.lower())
     if not limpa or eh_subtitulo_ou_divisoria(bruta):
+        return False
+    if eh_linha_encaminhado(bruta):
         return False
     if eh_linha_endereco(bruta, locais_dict) or eh_linha_produto_clara(bruta, locais_dict):
         return False
@@ -162,6 +188,8 @@ def pode_ser_nome_cliente(linha: str, locais_dict: dict = None) -> bool:
         return False
     if bruta.startswith("(") or eh_subtitulo_ou_divisoria(bruta) or bruta.endswith(";"):
         return False
+    if eh_linha_encaminhado(bruta):
+        return False
     if re.match(r"^(mercadoria|item|itens|endereco|end\.?|local|entrega|obs)\s*[:\-]", limpa):
         return False
     if re.match(r"^\d+", limpa) or re.match(r"^(pacote|pct)\b", limpa):
@@ -170,9 +198,50 @@ def pode_ser_nome_cliente(linha: str, locais_dict: dict = None) -> bool:
         return False
     return True
 
+_RE_CORTESIA_ENTREGA = re.compile(
+    r"^(?:por\s+favor|favor|pfv|pf|pode|gentileza)\b[\s,:-]*",
+    re.IGNORECASE,
+)
+_RE_ROTULO_ENTREGA = re.compile(
+    r"^(?:endere[cç]o(?:\s+de\s+entrega)?|end\.?|local(?:\s+de\s+entrega)?|entrega|ponto)\s*[:\-]\s*",
+    re.IGNORECASE,
+)
+_RE_VERBO_ENTREGA = re.compile(
+    r"^(?:entregar|enviar|mandar|deixar|levar|entrega|envia|manda|deixa|leva)\b"
+    r"(?:\s+(?:somente|só|so|apenas|aí|ai|lá|la|aqui)\b)?"
+    r"(?:\s+(?:nas|nos|numa|num|pela|pelo|para|pra|na|no|em|ao|à|a)\b)?"
+    r"\s*",
+    re.IGNORECASE,
+)
+
+
+def retirar_instrucao_de_entrega(texto: str) -> str:
+    """Tira do começo o pedido de entrega e o rótulo. O nome da rua fica intacto."""
+    atual = str(texto or "").strip()
+    anterior = None
+    while atual and atual != anterior:
+        anterior = atual
+        atual = _RE_CORTESIA_ENTREGA.sub("", atual).strip(" ,:-")
+        atual = _RE_ROTULO_ENTREGA.sub("", atual).strip(" ,:-")
+        resto = _RE_VERBO_ENTREGA.sub("", atual).strip(" ,:-")
+        if resto and re.search(r"[A-Za-zÀ-ÿ]{3,}", resto):
+            atual = resto
+    return atual
+
+
+def cidades_rmbh_para_busca(cidade_detectada: str) -> list:
+    """A cidade do pedido fica na frente. O restante da RMBH vem em seguida."""
+    ordem = []
+    if str(cidade_detectada or "").strip():
+        ordem.append(cidade_detectada)
+    for nome in MAPA_NOMES_CIDADES.values():
+        if nome not in ordem:
+            ordem.append(nome)
+    return ordem
+
+
 def separar_componentes_endereco(endereco_bruto: str):
-    end_limpo = str(endereco_bruto).strip()
-    end_limpo = re.sub(r"\b(endere[cç]o|end\.?|local|entrega)\s*[:\-]?\s*", " ", end_limpo, flags=re.IGNORECASE).strip()
+    end_limpo = retirar_instrucao_de_entrega(str(endereco_bruto).strip())
     end_limpo = re.sub(r"\([^)]*\)", " ", end_limpo)
     end_limpo = re.sub(r"^(av|r|al|tv)\.([a-zA-Z])", r"\1. \2", end_limpo, flags=re.IGNORECASE)
     end_limpo = re.sub(r"\b(?:n[º°.]?\s*)(\d{1,5})\b", r" \1", end_limpo, flags=re.IGNORECASE)
@@ -227,11 +296,13 @@ def separar_componentes_endereco(endereco_bruto: str):
         resto_limpo = re.sub(rf"\b{MAPA_NOMES_CIDADES[cid]}\b", " ", resto_limpo, flags=re.IGNORECASE)
 
     resto_limpo = re.sub(r"\b(mg|minas gerais|brasil)\b", " ", resto_limpo, flags=re.IGNORECASE)
-    for reg in REGIONAIS_BH:
-        resto_limpo = re.sub(rf"\b{re.escape(reg)}\b", " ", resto_limpo, flags=re.IGNORECASE)
 
     partes_resto = [p.strip(" ,.-/:") for p in re.split(r"[,/\-]", resto_limpo) if p.strip(" ,.-/:")]
-    bairro_pos = partes_resto[0] if partes_resto else ""
+    partes_especificas = [p for p in partes_resto if not eh_regional_bh(p)]
+    if partes_especificas:
+        bairro_pos = partes_especificas[0]
+    else:
+        bairro_pos = partes_resto[0] if partes_resto else ""
 
     if bairro_antes_da_rua and bairro_pos:
         bairro_dica = bairro_antes_da_rua
@@ -279,6 +350,14 @@ def formatar_via_com_prefixo(nome_via: str, rua_original_usuario: str = "") -> s
         return f"Travessa {via}"
     return f"Rua {via}"
 
+def _limite_do_lado(num: int, texto_limites: str) -> int:
+    """No Correios, 389/390 é o ímpar e o par. Um número só vale para os dois lados."""
+    nums = [int(n) for n in re.findall(r"\d+", texto_limites)]
+    if len(nums) >= 2 and num % 2 == 0:
+        return nums[1]
+    return nums[0]
+
+
 def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> bool:
     if not numero_str:
         return True
@@ -295,18 +374,77 @@ def numero_cabe_na_faixa_viacep(numero_str: str, complemento_viacep: str) -> boo
     if "lado impar" in comp and (num % 2 == 0):
         return False
 
-    m_de_a = re.search(r"de\s+(\d+)(?:/\d+)?\s+a\s+(\d+)(?:/\d+)?", comp)
+    m_de_a = re.search(r"de\s+(\d+(?:/\d+)?)\s+a\s+(\d+(?:/\d+)?)", comp)
     if m_de_a:
-        ini, fim = int(m_de_a.group(1)), int(m_de_a.group(2))
-        return ini <= num <= fim
-    m_ate = re.search(r"ate\s+(\d+)", comp)
+        return _limite_do_lado(num, m_de_a.group(1)) <= num <= _limite_do_lado(num, m_de_a.group(2))
+    m_ate = re.search(r"ate\s+(\d+(?:/\d+)?)", comp)
     if m_ate:
-        return num <= int(m_ate.group(1))
-    m_fim = re.search(r"de\s+(\d+)(?:/\d+)?\s+ao\s+fim", comp)
+        return num <= _limite_do_lado(num, m_ate.group(1))
+    m_fim = re.search(r"de\s+(\d+(?:/\d+)?)\s+ao\s+fim", comp)
     if m_fim:
-        return num >= int(m_fim.group(1))
+        return num >= _limite_do_lado(num, m_fim.group(1))
 
     numeros = [int(n) for n in re.findall(r"\d+", comp)]
     if numeros:
         return num in numeros
     return False
+
+
+def faixa_viacep_exclui_numero(numero_str: str, complemento_viacep: str) -> bool:
+    """Faixa preenchida que não contém o número. Complemento vazio não exclui."""
+    if not str(numero_str or "").strip() or not str(complemento_viacep or "").strip():
+        return False
+    return not numero_cabe_na_faixa_viacep(numero_str, complemento_viacep)
+
+
+def escolher_registro_viacep(registros: list, numero: str, bairro_dica: str = "") -> dict:
+    """Escolhe o trecho do ViaCEP de uma mesma rua.
+
+    O bairro escrito no pedido ganha quando a faixa contém o número ou quando
+    o Correios deixou a faixa em branco. Se toda faixa preenchida deixa o
+    número de fora, o bairro não é travado: a escolha fica com quem revisa.
+    """
+    def bate(item) -> bool:
+        return bool(bairro_dica) and similaridade_bairros(bairro_dica, item.get("bairro") or "") >= 0.72
+
+    def sem_faixa(item) -> bool:
+        return not str(item.get("complemento") or "").strip()
+
+    def listar_unicos(itens) -> list:
+        unicos = []
+        vistos = set()
+        for item in itens:
+            chave = remover_acentos(str(item.get("bairro") or "").lower())
+            if not chave or chave in vistos:
+                continue
+            vistos.add(chave)
+            unicos.append(item)
+        return unicos
+
+    vivos = [
+        item for item in registros
+        if item.get("bairro") and not faixa_viacep_exclui_numero(numero, item.get("complemento") or "")
+    ]
+    if bairro_dica:
+        batem = [item for item in registros if item.get("bairro") and bate(item)]
+        if batem:
+            if not str(numero or "").strip():
+                return {"escolhido": batem[0], "opcoes": [], "bairro_travado": True}
+            na_faixa = [
+                item for item in batem
+                if numero and numero_cabe_na_faixa_viacep(numero, item.get("complemento") or "")
+            ]
+            vazios = [item for item in batem if sem_faixa(item)]
+            if na_faixa or vazios:
+                return {"escolhido": (na_faixa or vazios)[0], "opcoes": [], "bairro_travado": True}
+            # O bairro foi escrito, mas toda faixa preenchida deixa o número de fora.
+            opcoes = listar_unicos(vivos + batem)
+            return {"escolhido": None, "opcoes": opcoes, "bairro_travado": False}
+
+    unicos = listar_unicos(vivos)
+
+    if len(unicos) == 1:
+        return {"escolhido": unicos[0], "opcoes": [], "bairro_travado": False}
+    if len(unicos) > 1:
+        return {"escolhido": None, "opcoes": unicos, "bairro_travado": False}
+    return {"escolhido": None, "opcoes": [], "bairro_travado": False}
