@@ -7,6 +7,8 @@ from gerador_rotas.dominio.parser_pedidos import montar_linha_cliente
 from gerador_rotas.dominio.parser_rotas_prontas import (
     acrescentar_paradas,
     extrair_paradas_de_rotas_prontas,
+    parada_avulsa,
+    remover_paradas_excluidas,
 )
 from gerador_rotas.estado import atualizar_base_etiquetas
 from gerador_rotas.etiquetas.parser import importar_etiquetas_das_rotas_calculadas
@@ -72,6 +74,12 @@ def _limpar_rotas_montadas():
     st.session_state["geometrias_otimizador"] = {}
     st.session_state["avisos_otimizador"] = []
     st.session_state["contador_form_otimizador"] = st.session_state.get("contador_form_otimizador", 0) + 1
+
+
+def _sem_marca_de_exclusao(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "Excluir" not in df.columns:
+        return df
+    return df.drop(columns=["Excluir"])
 
 
 def _gravar_rotas(df, nomes, resumo, coord, geometrias, avisos):
@@ -197,12 +205,68 @@ def render_pagina_otimizador(partida_ok, desc_partida_validada, lat_partida, lon
             "altere a coluna Rota ou Posição: a sequência é recalculada."
         )
 
+        with st.form("form_pedido_avulso", clear_on_submit=True):
+            st.markdown("**Adicionar um pedido**")
+            col_nome, col_end, col_rota = st.columns([2, 3, 1.5])
+            with col_nome:
+                nome_novo = st.text_input("Cliente", placeholder="GEORGE [TR]")
+            with col_end:
+                endereco_novo = st.text_input(
+                    "Endereço",
+                    placeholder="Avenida Amazonas, 1044, Centro, Belo Horizonte",
+                )
+            with col_rota:
+                rota_escolhida = st.selectbox("Rota", options=nomes)
+            rota_nova = st.text_input(
+                "Rota nova, se não for uma das de cima",
+                placeholder="Ex: LE",
+            )
+            enviar_pedido = st.form_submit_button(
+                "➕ Adicionar pedido nesta rota",
+                type="primary",
+                use_container_width=True,
+            )
+        if enviar_pedido:
+            rota_destino = rota_nova.strip() or rota_escolhida
+            pedido = parada_avulsa(nome_novo, endereco_novo, rota_destino)
+            if pedido.empty:
+                st.warning("Escreva o endereço do pedido.")
+            elif not partida_ok:
+                st.error("Corrija o ponto de partida na barra lateral antes de adicionar o pedido.")
+            else:
+                with st.spinner("Localizando o endereço no mapa..."):
+                    pedido_geo = _preencher_coordenadas(pedido)
+                    base = _sem_marca_de_exclusao(
+                        st.session_state.get("df_otimizador_editado", df_base)
+                    )
+                    if base is None or base.empty:
+                        base = _sem_marca_de_exclusao(df_base)
+                    df_junto, nomes_juntos, pulados = acrescentar_paradas(base, nomes, pedido_geo)
+                    if pulados:
+                        st.warning(f"{pulados[0]} já está no mapa com esse endereço.")
+                    else:
+                        resumo_novo, geometrias, avisos = medir_rotas_na_ordem(
+                            df_junto, nomes_juntos, lat_partida, lon_partida
+                        )
+                        _gravar_rotas(
+                            df_junto,
+                            nomes_juntos,
+                            resumo_novo,
+                            (lat_partida, lon_partida),
+                            geometrias,
+                            avisos,
+                        )
+                        st.rerun()
+
+        tabela = _sem_marca_de_exclusao(df_base).copy()
+        tabela.insert(0, "Excluir", False)
         df_edit = st.data_editor(
-            df_base,
+            tabela,
             use_container_width=True,
             hide_index=True,
-            column_order=["Rota", "Ordem", "Posicao", "Cliente", "Vendedor", "Pacotes", "Observacao", "Endereco"],
+            column_order=["Excluir", "Rota", "Ordem", "Posicao", "Cliente", "Vendedor", "Pacotes", "Observacao", "Endereco"],
             column_config={
+                "Excluir": st.column_config.CheckboxColumn("🗑️", width="small", default=False),
                 "Rota": st.column_config.SelectboxColumn(
                     "🔄 Rota (Trocar)",
                     options=nomes,
@@ -225,16 +289,45 @@ def render_pagina_otimizador(partida_ok, desc_partida_validada, lat_partida, lon
             key=f"editor_otimizador_{st.session_state['versao_editor_otimizador']}",
         )
         df_edit["Cliente"] = df_edit["Cliente"].astype(str).str.upper()
-        st.session_state["df_otimizador_editado"] = df_edit
+        st.session_state["df_otimizador_editado"] = _sem_marca_de_exclusao(df_edit)
+
+        qtd_excluir = int(df_edit["Excluir"].fillna(False).astype(bool).sum())
+        texto_excluir = (
+            f"🗑️ Excluir selecionados ({qtd_excluir})" if qtd_excluir else "🗑️ Excluir selecionados"
+        )
+        if st.button(texto_excluir, use_container_width=True):
+            if qtd_excluir == 0:
+                st.toast("Marque a caixinha 🗑️ do cliente que deseja tirar da rota.")
+            else:
+                restante, nomes_restantes = remover_paradas_excluidas(df_edit, nomes)
+                if restante.empty or not partida_ok:
+                    if restante.empty:
+                        _limpar_rotas_montadas()
+                    else:
+                        _gravar_rotas(restante, nomes_restantes, {}, None, {}, [])
+                    st.rerun()
+                with st.spinner("Atualizando o mapa..."):
+                    resumo_novo, geometrias, avisos = medir_rotas_na_ordem(
+                        restante, nomes_restantes, lat_partida, lon_partida
+                    )
+                _gravar_rotas(
+                    restante,
+                    nomes_restantes,
+                    resumo_novo,
+                    (lat_partida, lon_partida),
+                    geometrias,
+                    avisos,
+                )
+                st.rerun()
 
         mudou = (
-            not df_edit["Rota"].equals(df_base["Rota"])
-            or not df_edit["Posicao"].equals(df_base["Posicao"])
+            not df_edit["Rota"].equals(tabela["Rota"])
+            or not df_edit["Posicao"].equals(tabela["Posicao"])
         )
         if mudou and partida_ok:
             with st.spinner("Recalculando a melhor sequência das rotas após a alteração..."):
                 df_novo, novo_km, coord, geometrias, avisos = recalcular_todas_as_rotas(
-                    df_edit, nomes, lat_partida, lon_partida
+                    _sem_marca_de_exclusao(df_edit), nomes, lat_partida, lon_partida
                 )
                 _gravar_rotas(df_novo, nomes, novo_km, coord, geometrias, avisos)
                 st.rerun()

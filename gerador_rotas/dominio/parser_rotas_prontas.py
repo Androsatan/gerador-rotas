@@ -152,6 +152,45 @@ def _renumerar(df: pd.DataFrame) -> pd.DataFrame:
     return saida
 
 
+def parada_avulsa(cliente_linha: str, endereco: str, rota: str) -> pd.DataFrame:
+    """Um pedido solto, já destinado à rota escolhida. O endereço permanece como foi escrito."""
+    endereco_limpo = str(endereco or "").strip()
+    if not endereco_limpo:
+        return pd.DataFrame()
+    cliente, vendedor, pacotes, obs = separar_linha_cliente(cliente_linha or "CLIENTE")
+    return pd.DataFrame([{
+        "Rota": _titulo_rota(rota),
+        "Ordem": "1º",
+        "Posicao": "Normal",
+        "Cliente": cliente,
+        "Vendedor": vendedor,
+        "Pacotes": pacotes,
+        "Observacao": obs,
+        "Endereco": endereco_limpo,
+        "Lat": None,
+        "Lon": None,
+    }])
+
+
+def remover_paradas_excluidas(df: pd.DataFrame, nomes_atuais: list):
+    """Tira as linhas marcadas e some a rota que ficar sem ninguém."""
+    base = df.copy()
+    if "Excluir" in base.columns:
+        marcados = base["Excluir"].fillna(False).astype(bool)
+        base = base.loc[~marcados].drop(columns=["Excluir"])
+    elif not base.empty:
+        base = base.copy()
+    base = base.reset_index(drop=True)
+    if base.empty:
+        return base, []
+    base = _renumerar(base)
+    nomes = [nome for nome in nomes_atuais if (base["Rota"] == nome).any()]
+    for rota in base["Rota"]:
+        if rota not in nomes:
+            nomes.append(rota)
+    return base, nomes
+
+
 def acrescentar_paradas(df_atual: pd.DataFrame, nomes_atuais: list, df_novo: pd.DataFrame):
     """Soma paradas novas. Uma rota já existente recebe os clientes no fim."""
     if df_novo is None or df_novo.empty:

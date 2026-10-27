@@ -3,6 +3,8 @@ import unittest
 from gerador_rotas.dominio.parser_rotas_prontas import (
     acrescentar_paradas,
     extrair_paradas_de_rotas_prontas,
+    parada_avulsa,
+    remover_paradas_excluidas,
     separar_linha_cliente,
 )
 
@@ -111,6 +113,28 @@ class ParserRotasProntasTest(unittest.TestCase):
         self.assertEqual(len(df), 1)
         self.assertEqual(nomes, ["ROTA FP"])
         self.assertEqual(pulados, ["CAROLINE"])
+
+    def test_pedido_avulso_entra_na_rota_escolhida(self):
+        base, _ = extrair_paradas_de_rotas_prontas(
+            "ROTA FP\n\nRua A, 1, Centro, Belo Horizonte, 30180-006\nCAROLINE [TR]\n"
+        )
+        nova = parada_avulsa("GEORGE [TR]", "Avenida Amazonas, 1044, Centro", "HG")
+        df, nomes, pulados = acrescentar_paradas(base, ["ROTA FP"], nova)
+        self.assertEqual(pulados, [])
+        self.assertEqual(nomes, ["ROTA FP", "ROTA HG"])
+        self.assertEqual(df.iloc[1]["Cliente"], "GEORGE")
+        self.assertEqual(df.iloc[1]["Rota"], "ROTA HG")
+        self.assertEqual(df.iloc[1]["Endereco"], "Avenida Amazonas, 1044, Centro")
+
+    def test_excluir_tira_o_cliente_e_a_rota_vazia(self):
+        df, nomes = extrair_paradas_de_rotas_prontas(TEXTO_DUAS_ROTAS)
+        df["Excluir"] = False
+        df.loc[df["Cliente"] == "GEORGE", "Excluir"] = True
+        df.loc[df["Cliente"] == "VINICIUS GUSS", "Excluir"] = True
+        restante, nomes_restantes = remover_paradas_excluidas(df, nomes)
+        self.assertEqual(list(restante["Cliente"]), ["CAROLINE", "LUCAS PEDERSOLI"])
+        self.assertEqual(nomes_restantes, ["ROTA FP"])
+        self.assertNotIn("Excluir", restante.columns)
 
     def test_texto_vazio_nao_gera_parada(self):
         df, nomes = extrair_paradas_de_rotas_prontas("   \n")
