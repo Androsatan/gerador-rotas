@@ -14,16 +14,27 @@ from gerador_rotas.dominio.similaridade import (
     similaridade_palavras,
 )
 
+def cidade_escrita(texto: str) -> str:
+    """Cidade que o pedido nomeia. «BH» é Belo Horizonte. Sem cidade, devolve vazio."""
+    texto_norm = remover_acentos(str(texto or "").lower())
+    for cid in CIDADES_RMBH:
+        if re.search(rf"\b{cid}\b", texto_norm):
+            return MAPA_NOMES_CIDADES.get(cid, cid.title())
+    if re.search(r"\bbh\b", texto_norm) or re.search(r"\bb\.h\.", texto_norm):
+        return "Belo Horizonte"
+    return ""
+
+
 def detectar_cidade_rmbh(texto: str, bairro_dica: str = None) -> str:
     """Cidade escrita no texto ganha. O mapa de bairro só olha o bairro, não o nome da rua.
 
     «Avenida Amazonas» não é o bairro Amazonas de Contagem. Sem bairro separado,
     o texto inteiro vale: é o caso do ponto de partida «Eldorado».
     """
+    escrita = cidade_escrita(texto)
+    if escrita:
+        return escrita
     texto_norm = remover_acentos(str(texto or "").lower())
-    for cid in CIDADES_RMBH:
-        if re.search(rf"\b{cid}\b", texto_norm):
-            return MAPA_NOMES_CIDADES.get(cid, cid.title())
 
     if bairro_dica is None:
         alvo = texto_norm
@@ -244,7 +255,12 @@ def separar_componentes_endereco(endereco_bruto: str):
     end_limpo = retirar_instrucao_de_entrega(str(endereco_bruto).strip())
     end_limpo = re.sub(r"\([^)]*\)", " ", end_limpo)
     end_limpo = re.sub(r"^(av|r|al|tv)\.([a-zA-Z])", r"\1. \2", end_limpo, flags=re.IGNORECASE)
-    end_limpo = re.sub(r"\b(?:n[º°.]?\s*)(\d{1,5})\b", r" \1", end_limpo, flags=re.IGNORECASE)
+    end_limpo = re.sub(
+        r"\b(?:n[uú]mero|nro|num\.?|n[º°.]?)\s*(\d{1,5})\b",
+        r" \1",
+        end_limpo,
+        flags=re.IGNORECASE,
+    )
 
     cep_explicito = ""
     m_cep = re.search(r"\b(\d{5})-?(\d{3})\b", end_limpo)
@@ -294,6 +310,11 @@ def separar_componentes_endereco(endereco_bruto: str):
     for cid in CIDADES_RMBH:
         resto_limpo = re.sub(rf"\b{cid}\b", " ", resto_limpo, flags=re.IGNORECASE)
         resto_limpo = re.sub(rf"\b{MAPA_NOMES_CIDADES[cid]}\b", " ", resto_limpo, flags=re.IGNORECASE)
+    resto_limpo = re.sub(r"\bbh\b", " ", resto_limpo, flags=re.IGNORECASE)
+    resto_limpo = re.sub(r"\bb\.h\.", " ", resto_limpo, flags=re.IGNORECASE)
+    if bairro_antes_da_rua:
+        bairro_antes_da_rua = re.sub(r"\bbh\b", " ", bairro_antes_da_rua, flags=re.IGNORECASE)
+        bairro_antes_da_rua = re.sub(r"\bb\.h\.", " ", bairro_antes_da_rua, flags=re.IGNORECASE).strip(" ,.-")
 
     resto_limpo = re.sub(r"\b(mg|minas gerais|brasil)\b", " ", resto_limpo, flags=re.IGNORECASE)
 

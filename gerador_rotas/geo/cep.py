@@ -76,11 +76,13 @@ def consultar_viacep_com_tolerancia(rua_original: str, rua_sem_prefixo: str, cid
         if len(tk) >= 4 and tk not in termos_tentativa:
             termos_tentativa.append(tk)
 
+    houve_resposta = False
     for termo in termos_tentativa[:3]:
         try:
             url_viacep = f"https://viacep.com.br/ws/MG/{quote(remover_acentos(cidade))}/{quote(remover_acentos(termo))}/json/"
             resp = requests.get(url_viacep, headers=headers, timeout=2.5)
             if resp.status_code == 200:
+                houve_resposta = True
                 dados = resp.json()
                 if isinstance(dados, list) and len(dados) > 0:
                     filtrados = [
@@ -90,5 +92,7 @@ def consultar_viacep_com_tolerancia(rua_original: str, rua_sem_prefixo: str, cid
                     if filtrados:
                         return filtrados
         except Exception:
-            pass
+            continue
+    if termos_tentativa and not houve_resposta:
+        raise ConnectionError("ViaCEP sem resposta")
     return []

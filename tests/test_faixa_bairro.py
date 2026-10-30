@@ -61,6 +61,29 @@ class FaixaViaCepTest(unittest.TestCase):
         self.assertEqual(bairro.lower(), "centro")
         self.assertEqual(cidade, "Belo Horizonte")
 
+    def test_numero_por_extenso_nao_entra_no_nome_da_rua(self):
+        for frase in (
+            "Engenheiro Alberto Pontes, número 55",
+            "Engenheiro Alberto Pontes, numero 55",
+            "Engenheiro Alberto Pontes nº 55",
+        ):
+            rua, numero, bairro, cidade = separar_componentes_endereco(frase)
+            self.assertEqual(numero, "55", frase)
+            self.assertIn("alberto", rua.lower(), frase)
+            self.assertIn("pontes", rua.lower(), frase)
+            self.assertNotIn("numero", rua.lower(), frase)
+            self.assertEqual(bairro, "", frase)
+            self.assertEqual(cidade, "Belo Horizonte", frase)
+
+    def test_sigla_bh_trava_belo_horizonte_e_sai_do_bairro(self):
+        rua, numero, bairro, cidade = separar_componentes_endereco(
+            "Av Amazonas 1044 centro BH"
+        )
+        self.assertEqual(numero, "1044")
+        self.assertIn("amazonas", rua.lower())
+        self.assertEqual(bairro.lower(), "centro")
+        self.assertEqual(cidade, "Belo Horizonte")
+
     def test_bairro_homonimo_continua_escolhendo_a_cidade(self):
         _, _, bairro, cidade = separar_componentes_endereco(
             "Rua das Flores 10, Amazonas"
@@ -300,6 +323,153 @@ class AvenidaAmazonasTest(unittest.TestCase):
         self.assertIn("Avenida", endereco)
         self.assertNotIn("Marrocos", endereco)
         self.assertNotIn("Contagem", endereco)
+
+    def test_numero_por_extenso_confirma_a_rua(self):
+        def via(rua, _sem, cidade):
+            if cidade != "Belo Horizonte":
+                return []
+            if "numero" in rua.lower():
+                return []
+            return [{
+                "logradouro": "Rua Engenheiro Alberto Pontes",
+                "bairro": "Santa Efigênia",
+                "cep": "30240-320",
+                "localidade": "Belo Horizonte",
+                "complemento": "",
+            }]
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.92, -43.92)):
+            endereco, status, _lat, _lon, _opcoes = buscar_endereco_completo(
+                "Engenheiro Alberto Pontes, número 55"
+            )
+
+        self.assertIn("Alberto Pontes", endereco)
+        self.assertIn("55", endereco)
+        self.assertIn("Belo Horizonte", endereco)
+        self.assertNotIn("Número", endereco)
+        self.assertNotIn("Numero", endereco)
+        self.assertTrue(status.startswith("✅"), status)
+
+    def test_falha_em_belo_horizonte_nao_aceita_a_mesma_rua_em_betim(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Belo Horizonte":
+                raise ConnectionError("viacep")
+            if cidade == "Betim":
+                return [{
+                    "logradouro": "Rua Gonçalves Dias",
+                    "bairro": "Centro",
+                    "cep": "32600-100",
+                    "localidade": "Betim",
+                    "complemento": "",
+                }]
+            return []
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(None, None)), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_coordenada_bairro", return_value=(False, "", None, None)):
+            endereco, _status, _lat, _lon, _opcoes = buscar_endereco_completo(
+                "rua goncalves dias 354"
+            )
+
+        self.assertIn("Belo Horizonte", endereco)
+        self.assertNotIn("Betim", endereco)
+
+    def test_bh_escrito_nao_aceita_o_centro_de_betim(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Betim":
+                return [{
+                    "logradouro": "Avenida Amazonas",
+                    "bairro": "Centro",
+                    "cep": "32600-000",
+                    "localidade": "Betim",
+                    "complemento": "de 1000 a 2000 - lado par",
+                }]
+            return []
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(None, None)), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_coordenada_bairro", return_value=(False, "", None, None)):
+            endereco, _status, _lat, _lon, _opcoes = buscar_endereco_completo(
+                "Av Amazonas 1044 centro BH"
+            )
+
+        self.assertIn("Centro", endereco)
+        self.assertIn("Belo Horizonte", endereco)
+        self.assertNotIn("Betim", endereco)
+
+    def test_a_mesma_rua_em_bh_ganha_de_vespasiano(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Belo Horizonte":
+                return [{
+                    "logradouro": "Rua Serra do Rola Moça",
+                    "bairro": "Distrito Industrial do Jatobá",
+                    "cep": "30664-275",
+                    "localidade": "Belo Horizonte",
+                    "complemento": "",
+                }]
+            if cidade == "Vespasiano":
+                return [{
+                    "logradouro": "Rua Serra do Rola Moça",
+                    "bairro": "Centro",
+                    "cep": "33200-000",
+                    "localidade": "Vespasiano",
+                    "complemento": "",
+                }]
+            return []
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.97, -43.99)):
+            endereco, status, _lat, _lon, _opcoes = buscar_endereco_completo(
+                "Serra do rola moça 381"
+            )
+
+        self.assertIn("Jatobá", endereco)
+        self.assertIn("Belo Horizonte", endereco)
+        self.assertNotIn("Vespasiano", endereco)
+        self.assertTrue(status.startswith("✅"), status)
+
+    def test_geocodificador_de_outra_cidade_nao_troca_o_municipio(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Belo Horizonte":
+                return [{
+                    "logradouro": "Rua Gonçalves Dias",
+                    "bairro": "Funcionários",
+                    "cep": "30140-092",
+                    "localidade": "Belo Horizonte",
+                    "complemento": "",
+                }]
+            return []
+
+        candidato_betim = [{
+            "logradouro": "Rua Gonçalves Dias",
+            "bairro": "Centro",
+            "cidade": "Betim",
+            "cep": "32600-100",
+            "lat": -19.96,
+            "lon": -44.20,
+        }]
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=candidato_betim), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.93, -43.93)):
+            endereco, status, _lat, _lon, _opcoes = buscar_endereco_completo(
+                "rua goncalves dias 354"
+            )
+
+        self.assertIn("Funcionários", endereco)
+        self.assertIn("Belo Horizonte", endereco)
+        self.assertNotIn("Betim", endereco)
+        self.assertTrue(status.startswith("✅"), status)
 
 
 if __name__ == "__main__":
