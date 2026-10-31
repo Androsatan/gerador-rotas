@@ -564,3 +564,40 @@ def recalcular_todas_as_rotas(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: lis
         listas_saida = listas_saida + [resto]
 
     return _montar_saida(base, nomes_saida, listas_saida), resumo, (lat_s, lon_s), geometrias, avisos
+
+
+def encaixar_na_rota(df_com_rotas: pd.DataFrame, ordem_nomes_rotas: list, rota: str, lat_s: float, lon_s: float):
+    """Reordena só a rota que recebeu o pedido. As outras permanecem na ordem atual."""
+    rota = str(rota)
+    base = df_com_rotas.copy().reset_index(drop=True)
+    da_rota = base[base["Rota"].astype(str) == rota].copy()
+    outras = base[base["Rota"].astype(str) != rota].copy()
+    if da_rota.empty:
+        resumo, geometrias, avisos = medir_rotas_na_ordem(base, ordem_nomes_rotas, lat_s, lon_s)
+        return base, resumo, geometrias, avisos
+
+    df_rota, resumo_rota, _, geom_rota, avisos = recalcular_todas_as_rotas(
+        da_rota, [rota], lat_s, lon_s
+    )
+    nomes_outras = [nome for nome in ordem_nomes_rotas if nome != rota]
+    if outras.empty or not nomes_outras:
+        return df_rota, resumo_rota, geom_rota, avisos
+
+    resumo_outras, geom_outras, avisos_outras = medir_rotas_na_ordem(
+        outras, nomes_outras, lat_s, lon_s
+    )
+    pedacos = []
+    for nome in ordem_nomes_rotas:
+        trecho = df_rota if nome == rota else outras[outras["Rota"].astype(str) == nome]
+        if trecho is not None and not trecho.empty:
+            pedacos.append(trecho)
+    junto = pd.concat(pedacos, ignore_index=True)
+    resumo = dict(resumo_outras)
+    resumo.update(resumo_rota)
+    geometrias = dict(geom_outras)
+    geometrias.update(geom_rota)
+    avisos_finais = list(avisos)
+    for aviso in avisos_outras:
+        if aviso not in avisos_finais:
+            avisos_finais.append(aviso)
+    return junto, resumo, geometrias, avisos_finais

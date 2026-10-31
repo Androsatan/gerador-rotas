@@ -1,6 +1,9 @@
 import unittest
+from unittest.mock import patch
 
-from gerador_rotas.rotas.planejador import atribuir_paradas, ordenar_paradas
+import pandas as pd
+
+from gerador_rotas.rotas.planejador import atribuir_paradas, encaixar_na_rota, ordenar_paradas
 
 
 def matriz_linha(n_stops: int):
@@ -62,6 +65,33 @@ class CotasTest(unittest.TestCase):
             sequencia = [grupo[i] for i in ordem]
             self.assertEqual(sequencia, sorted(grupo))
             self.assertEqual(sequencia[-1], max(grupo))
+
+
+class EncaixarNaRotaTest(unittest.TestCase):
+    def test_pedido_novo_entra_no_meio_e_a_outra_rota_fica(self):
+        df = pd.DataFrame([
+            {"Rota": "ROTA FP", "Ordem": "1º", "Posicao": "Normal", "Cliente": "ANA", "Lat": -19.90, "Lon": -43.90},
+            {"Rota": "ROTA LE", "Ordem": "1º", "Posicao": "Normal", "Cliente": "PERTO", "Lat": -19.91, "Lon": -43.91},
+            {"Rota": "ROTA LE", "Ordem": "2º", "Posicao": "Normal", "Cliente": "LONGE", "Lat": -20.00, "Lon": -44.00},
+            {"Rota": "ROTA LE", "Ordem": "3º", "Posicao": "Normal", "Cliente": "NOVO", "Lat": -19.95, "Lon": -43.95},
+        ])
+
+        def matriz(pontos):
+            n = len(pontos)
+            pos = [0, 1, 3, 2] if n == 4 else list(range(n))
+            dur = [[abs(pos[i] - pos[j]) * 100 for j in range(n)] for i in range(n)]
+            return dur, dur, "osrm"
+
+        with patch("gerador_rotas.rotas.planejador.obter_matriz_osrm", side_effect=matriz), \
+             patch("gerador_rotas.rotas.planejador.obter_geometria_osrm", side_effect=lambda pontos: [[p[0], p[1]] for p in pontos]), \
+             patch("gerador_rotas.rotas.planejador.obter_trajeto_osrm", side_effect=lambda pontos: ([[p[0], p[1]] for p in pontos], 1000)):
+            saida, _resumo, _geom, _avisos = encaixar_na_rota(
+                df, ["ROTA FP", "ROTA LE"], "ROTA LE", -19.90, -43.90
+            )
+
+        self.assertEqual(saida["Cliente"].tolist(), ["ANA", "PERTO", "NOVO", "LONGE"])
+        le = saida[saida["Rota"] == "ROTA LE"]
+        self.assertEqual(le["Ordem"].tolist(), ["1º", "2º", "3º"])
 
 
 def _sub(matriz, grupo):

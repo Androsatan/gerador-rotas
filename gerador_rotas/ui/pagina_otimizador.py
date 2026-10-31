@@ -13,7 +13,11 @@ from gerador_rotas.dominio.parser_rotas_prontas import (
 from gerador_rotas.estado import atualizar_base_etiquetas
 from gerador_rotas.etiquetas.parser import importar_etiquetas_das_rotas_calculadas
 from gerador_rotas.geo.geocodificadores import geocodificar_endereco_rua
-from gerador_rotas.rotas.planejador import medir_rotas_na_ordem, recalcular_todas_as_rotas
+from gerador_rotas.rotas.planejador import (
+    encaixar_na_rota,
+    medir_rotas_na_ordem,
+    recalcular_todas_as_rotas,
+)
 from gerador_rotas.ui.mapa import renderizar_mapa_rotas
 
 
@@ -201,6 +205,7 @@ def render_pagina_otimizador(partida_ok, desc_partida_validada, lat_partida, lon
 
         st.caption(
             "A otimização mantém cada cliente na rota em que foi colado. "
+            "Um pedido novo entra na sequência dessa rota, e não fica por último só por ter sido adicionado agora. "
             "Para passar um pedido de uma rota para outra ou mudar quem é o PRIMEIRO/ÚLTIMO, "
             "altere a coluna Rota ou Posição: a sequência é recalculada."
         )
@@ -234,7 +239,7 @@ def render_pagina_otimizador(partida_ok, desc_partida_validada, lat_partida, lon
             elif not partida_ok:
                 st.error("Corrija o ponto de partida na barra lateral antes de adicionar o pedido.")
             else:
-                with st.spinner("Localizando o endereço no mapa..."):
+                with st.spinner("Localizando o endereço e encaixando na rota..."):
                     pedido_geo = _preencher_coordenadas(pedido)
                     base = _sem_marca_de_exclusao(
                         st.session_state.get("df_otimizador_editado", df_base)
@@ -245,11 +250,16 @@ def render_pagina_otimizador(partida_ok, desc_partida_validada, lat_partida, lon
                     if pulados:
                         st.warning(f"{pulados[0]} já está no mapa com esse endereço.")
                     else:
-                        resumo_novo, geometrias, avisos = medir_rotas_na_ordem(
-                            df_junto, nomes_juntos, lat_partida, lon_partida
+                        rota_destino = str(pedido_geo.iloc[0]["Rota"])
+                        df_final, resumo_novo, geometrias, avisos = encaixar_na_rota(
+                            df_junto,
+                            nomes_juntos,
+                            rota_destino,
+                            lat_partida,
+                            lon_partida,
                         )
                         _gravar_rotas(
-                            df_junto,
+                            df_final,
                             nomes_juntos,
                             resumo_novo,
                             (lat_partida, lon_partida),
