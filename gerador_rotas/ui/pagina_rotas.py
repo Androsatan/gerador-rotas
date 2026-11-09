@@ -66,13 +66,17 @@ def render_pagina_rotas(partida_ok, desc_partida_validada, lat_partida, lon_part
     if st.button("🔍 Adicionar à Lista", type="primary", use_container_width=True):
         if texto_pedidos.strip():
             with st.spinner("Extraindo pedidos, filtrando mensagens e buscando CEPs..."):
-                df_extraidos = extrair_pedidos_brutos(texto_pedidos, locais_config, vendedor_lote)
+                ignorados = []
+                df_extraidos = extrair_pedidos_brutos(
+                    texto_pedidos, locais_config, vendedor_lote, ignorados
+                )
+                st.session_state["avisos_sem_endereco"] = ignorados
                 if not df_extraidos.empty:
                     qtd_add, lista_dups = adicionar_pedidos_na_sessao(df_extraidos)
                     st.session_state["avisos_duplicados"] = lista_dups
                     st.session_state["contador_form"] += 1
                     st.rerun()
-                else:
+                elif not ignorados:
                     st.warning("⚠️ Não foi possível identificar um endereço válido no texto colado.")
         else:
             st.warning("Cole pelo menos um pedido antes de clicar em adicionar.")
@@ -84,6 +88,15 @@ def render_pagina_rotas(partida_ok, desc_partida_validada, lat_partida, lon_part
         )
         if st.button("✖️ Fechar aviso de duplicados"):
             st.session_state["avisos_duplicados"] = []
+            st.rerun()
+
+    if st.session_state.get("avisos_sem_endereco"):
+        faltando = "\n".join(f"- **{item}**" for item in st.session_state["avisos_sem_endereco"])
+        st.warning(
+            f"⚠️ **{len(st.session_state['avisos_sem_endereco'])} pedido(s) não entraram porque o endereço não foi reconhecido:**\n{faltando}"
+        )
+        if st.button("✖️ Fechar aviso de endereços"):
+            st.session_state["avisos_sem_endereco"] = []
             st.rerun()
 
     # --- PASSO 2: TABELA DE CONFERÊNCIA, EDIÇÃO E EXCLUSÃO ---

@@ -185,7 +185,31 @@ def _fundir_continuacao_sem_endereco(blocos: list, locais_dict: dict) -> list:
             fundidos.append(list(bloco))
     return fundidos
 
-def listar_pre_pedidos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = "") -> list:
+def resumo_bloco_sem_endereco(bloco: list, locais_dict: dict = None) -> str:
+    """Nome e o trecho que sobrou, quando o bloco não virou pedido."""
+    nomes = []
+    resto = []
+    for linha in bloco:
+        texto = str(linha or "").strip()
+        if not texto or eh_subtitulo_ou_divisoria(texto):
+            continue
+        if sigla_do_encaminhado(texto) is not None:
+            continue
+        if eh_linha_produto_clara(texto, locais_dict):
+            continue
+        if pode_ser_nome_cliente(texto, locais_dict) and not re.search(r"\d", texto):
+            nomes.append(limpar_nome_cliente(texto))
+        else:
+            resto.append(texto)
+    if not nomes and not resto:
+        return ""
+    quem = nomes[0] if nomes else "Pedido sem nome"
+    if resto:
+        return f"{quem}: {resto[0]}"
+    return quem
+
+
+def listar_pre_pedidos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = "", ignorados: list = None) -> list:
     linhas_originais = texto_bruto.splitlines()
     tem_cabecalho_chat = any(REGEX_CABECALHO_CHAT.match(l) for l in linhas_originais if l.strip())
 
@@ -252,11 +276,17 @@ def listar_pre_pedidos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str
 
     pre_pedidos = []
     for b in blocos:
-        pre_pedidos.extend(extrair_dados_brutos_do_bloco(b, locais_dict, vendedor_padrao))
+        extraidos = extrair_dados_brutos_do_bloco(b, locais_dict, vendedor_padrao)
+        if extraidos:
+            pre_pedidos.extend(extraidos)
+        elif ignorados is not None:
+            resumo = resumo_bloco_sem_endereco(b, locais_dict)
+            if resumo:
+                ignorados.append(resumo)
     return pre_pedidos
 
-def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = ""):
-    pre_pedidos = listar_pre_pedidos(texto_bruto, locais_dict, vendedor_padrao)
+def extrair_pedidos_brutos(texto_bruto: str, locais_dict: dict, vendedor_padrao: str = "", ignorados: list = None):
+    pre_pedidos = listar_pre_pedidos(texto_bruto, locais_dict, vendedor_padrao, ignorados)
 
     if not pre_pedidos:
         return pd.DataFrame()

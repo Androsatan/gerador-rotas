@@ -74,6 +74,28 @@ def texto_parece_produto_cadastrado(texto_sem_num: str, locais_dict: dict) -> bo
                         return True
     return False
 
+def _tokens_de_produto(locais_dict: dict) -> set:
+    tokens = set()
+    for lista_prods in locais_dict.values():
+        for prod in lista_prods:
+            for pal in re.findall(r"[a-z]{3,}", remover_acentos(str(prod).lower())):
+                tokens.add(pal)
+    return tokens
+
+
+def comeca_com_produto(texto: str, locais_dict: dict = None) -> bool:
+    """A primeira palavra é um produto cadastrado, escrito igual.
+
+    «Silveira» não é «silver» e «Carmesia» não é «amnesia». Parecido não basta.
+    """
+    if not locais_dict:
+        return False
+    palavras = re.findall(r"[a-z]{3,}", remover_acentos(str(texto or "").lower()))
+    if not palavras:
+        return False
+    return palavras[0] in _tokens_de_produto(locais_dict)
+
+
 def eh_linha_produto_clara(linha: str, locais_dict: dict = None) -> bool:
     bruta = linha.strip()
     limpa = remover_acentos(bruta.lower()).strip(" ()[]")
@@ -117,13 +139,16 @@ def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
     if re.search(r"\b\d+(?:[.,/]\d+)?\s*(g|gr|kg|ml|un|pct|x|@|#)\b", linha_limpa) or "@" in linha_limpa or "#" in linha_limpa:
         return False
 
-    match_via_num = re.search(r"^([a-z\s.,'-]{3,}?)\s*(?:[,.]|\s+|\bn\.?\s*)(\d{1,5})\b", linha_limpa)
+    match_via_num = re.search(
+        r"^([a-z\s.,'-]{3,}?)\s*(?:[,.]\s*|\s+|\bn\.?\s*)(\d{1,5})\b",
+        linha_limpa,
+    )
     if match_via_num:
         nome_antes_num = match_via_num.group(1).strip(" ,.-")
+        if comeca_com_produto(nome_antes_num, locais_dict):
+            return False
         palavras_todas = re.findall(r"[a-z]{2,}", linha_limpa)
-        if len(palavras_todas) >= 2 and not texto_parece_produto_cadastrado(nome_antes_num, locais_dict):
-            return True
-        if len(nome_antes_num) >= 4 and not texto_parece_produto_cadastrado(nome_antes_num, locais_dict):
+        if len(palavras_todas) >= 2 or len(nome_antes_num) >= 4:
             return True
 
     return False

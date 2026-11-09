@@ -215,5 +215,64 @@ ENTREGAR NA CONSELHEIRO LAFAIETE 766
         self.assertIn("uva", pedidos[7]["Itens_Lidos"].lower())
 
 
+LOCAIS_COM_NOME_PARECIDO = {
+    "Saida": ["amnesia", "silver", "indoor", "uva"],
+}
+
+TEXTO_RUAS_PARECIDAS_COM_PRODUTO = """
+[06/11/2026 16:23] 2K:
+Encaminhado de Tr
+CAROL
+5g 24k
+
+Carmesia, 951. Santa Inês
+[06/11/2026 16:23] 2K:
+Encaminhado de Chucky
+Cristiano
+-
+1g 24k indoor
+3g uva
+-
+Édson Silveira 121 São Gabriel
+"""
+
+
+class RuaParecidaComProdutoTest(unittest.TestCase):
+    def test_carmesia_e_silveira_entram_mesmo_com_produto_parecido(self):
+        ignorados = []
+        pedidos = listar_pre_pedidos(
+            TEXTO_RUAS_PARECIDAS_COM_PRODUTO,
+            LOCAIS_COM_NOME_PARECIDO,
+            ignorados=ignorados,
+        )
+        self.assertEqual([p["Cliente"] for p in pedidos], ["CAROL", "CRISTIANO"])
+        self.assertEqual(pedidos[0]["Vendedor"], "TR")
+        self.assertIn("Carmesia", pedidos[0]["Endereco_Bruto"])
+        self.assertIn("951", pedidos[0]["Endereco_Bruto"])
+        self.assertEqual(pedidos[1]["Vendedor"], "CK")
+        self.assertIn("Silveira", pedidos[1]["Endereco_Bruto"])
+        self.assertIn("121", pedidos[1]["Endereco_Bruto"])
+        self.assertEqual(ignorados, [])
+
+    def test_pedido_sem_numero_avisa_e_os_outros_permanecem(self):
+        texto = TEXTO_RUAS_PARECIDAS_COM_PRODUTO + """
+[06/11/2026 16:40] 2K:
+Encaminhado de Tr
+Lucas
+2g uva
+entrega no local de sempre
+"""
+        ignorados = []
+        pedidos = listar_pre_pedidos(texto, LOCAIS_COM_NOME_PARECIDO, ignorados=ignorados)
+        self.assertEqual([p["Cliente"] for p in pedidos], ["CAROL", "CRISTIANO"])
+        self.assertTrue(any(item.startswith("LUCAS") for item in ignorados), ignorados)
+
+    def test_linha_que_comeca_com_produto_nao_vira_rua(self):
+        from gerador_rotas.dominio.endereco_texto import eh_linha_endereco
+
+        self.assertFalse(eh_linha_endereco("silver haze 10", LOCAIS_COM_NOME_PARECIDO))
+        self.assertTrue(eh_linha_endereco("Rua Silver 10", LOCAIS_COM_NOME_PARECIDO))
+
+
 if __name__ == "__main__":
     unittest.main()

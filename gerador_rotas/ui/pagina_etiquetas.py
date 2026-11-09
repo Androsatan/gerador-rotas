@@ -52,6 +52,47 @@ def _completar_enderecos_das_etiquetas(df):
     return df
 
 
+def _assinatura_etiquetas(df: pd.DataFrame) -> tuple:
+    if df is None or df.empty:
+        return ()
+    linhas = []
+    for _, row in df.iterrows():
+        marcado = row.get("Imprimir", True)
+        linhas.append((
+            bool(marcado) if pd.notna(marcado) else False,
+            str(row.get("Rota", "")),
+            str(row.get("Ordem", "")),
+            str(row.get("Nome Etiqueta", "")),
+            str(row.get("Endereco Etiqueta", "")),
+        ))
+    return tuple(linhas)
+
+
+def _oferecer_download_pdf(df_etiq_edit, caminho_modelo_repo, arquivo_modelo_upload):
+    if df_etiq_edit is None or df_etiq_edit.empty or "Imprimir" not in df_etiq_edit.columns:
+        return
+    df_selecionadas = df_etiq_edit[df_etiq_edit["Imprimir"].fillna(False).astype(bool)].copy()
+    qtd_selecionadas = len(df_selecionadas)
+    st.markdown(f"**Etiquetas selecionadas para o PDF:** `{qtd_selecionadas}` de `{len(df_etiq_edit)}`")
+
+    fonte_pdf = caminho_modelo_repo if caminho_modelo_repo else arquivo_modelo_upload
+    if not fonte_pdf:
+        st.error("⚠️ Adicione o arquivo `Etiqueta.pdf` no seu repositório GitHub ou faça upload acima para liberar o download.")
+    elif qtd_selecionadas == 0:
+        st.warning("⚠️ Marque pelo menos uma etiqueta na coluna '🖨️ Imprimir' para gerar o PDF.")
+    else:
+        pdf_bytes = gerar_pdf_etiquetas_10x15(df_selecionadas, fonte_pdf)
+        st.download_button(
+            label=f"📥 BAIXAR PDF ÚNICO 10x15 ({qtd_selecionadas} ETIQUETAS SELECIONADAS)",
+            data=pdf_bytes,
+            file_name="etiquetas_10x15.pdf",
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+            key="download_etiquetas_10x15",
+        )
+
+
 def render_pagina_etiquetas():
     st.title("🏷️ Gerador de Etiquetas (10x15 cm)")
 
@@ -182,7 +223,7 @@ def render_pagina_etiquetas():
                             df_sync.at[idx_amb, "Endereco Original"] = escolha_end
                             df_sync.at[idx_amb, "Opcoes_Endereco"] = "[]"
                             atualizar_base_etiquetas(df_sync)
-                            st.rerun()
+                            st.rerun(scope="app")
 
             rotas_presentes = sorted(list(df_base_e["Rota"].dropna().unique()))
 
@@ -192,23 +233,23 @@ def render_pagina_etiquetas():
                     df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
                     df_sync["Imprimir"] = True
                     atualizar_base_etiquetas(df_sync)
-                    st.rerun()
+                    st.rerun(scope="app")
             with c_sel2:
                 if st.button("🔲 Desmarcar Todas", use_container_width=True):
                     df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
                     df_sync["Imprimir"] = False
                     atualizar_base_etiquetas(df_sync)
-                    st.rerun()
+                    st.rerun(scope="app")
             with c_sel3:
                 if st.button("🗑️ Excluir Desmarcadas", use_container_width=True):
                     df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
                     df_rest = df_sync[df_sync["Imprimir"]].copy()
                     atualizar_base_etiquetas(df_rest)
-                    st.rerun()
+                    st.rerun(scope="app")
             with c_sel4:
                 if st.button("🧹 Limpar Lista de Etiquetas", use_container_width=True):
                     atualizar_base_etiquetas(pd.DataFrame())
-                    st.rerun()
+                    st.rerun(scope="app")
 
             if len(rotas_presentes) > 1:
                 st.caption("Filtrar seleção rápida por Rota:")
@@ -219,7 +260,7 @@ def render_pagina_etiquetas():
                             df_sync = st.session_state.get("df_etiquetas_editadas", df_base_e).copy()
                             df_sync["Imprimir"] = df_sync["Rota"] == r_nome
                             atualizar_base_etiquetas(df_sync)
-                            st.rerun()
+                            st.rerun(scope="app")
 
             df_etiq_edit = st.data_editor(
                 df_base_e,
@@ -242,26 +283,15 @@ def render_pagina_etiquetas():
                     df_etiq_edit[coluna_oculta] = df_base_e[coluna_oculta].values
             st.session_state["df_etiquetas_editadas"] = df_etiq_edit
 
-            df_selecionadas = df_etiq_edit[df_etiq_edit["Imprimir"]].copy()
-            qtd_selecionadas = len(df_selecionadas)
-
-            st.markdown(f"**Etiquetas selecionadas para o PDF:** `{qtd_selecionadas}` de `{len(df_etiq_edit)}`")
-
-            fonte_pdf = caminho_modelo_repo if caminho_modelo_repo else arquivo_modelo_upload
-
-            if not fonte_pdf:
-                st.error("⚠️ Adicione o arquivo `Etiqueta.pdf` no seu repositório GitHub ou faça upload acima para liberar o download.")
-            elif qtd_selecionadas == 0:
-                st.warning("⚠️ Marque pelo menos uma etiqueta na coluna '🖨️ Imprimir' para gerar o PDF.")
-            else:
-                pdf_bytes = gerar_pdf_etiquetas_10x15(df_selecionadas, fonte_pdf)
-                st.download_button(
-                    label=f"📥 BAIXAR PDF ÚNICO 10x15 ({qtd_selecionadas} ETIQUETAS SELECIONADAS)",
-                    data=pdf_bytes,
-                    file_name="etiquetas_10x15.pdf",
-                    mime="application/pdf",
-                    type="primary",
-                    use_container_width=True
-                )
+            assinatura = _assinatura_etiquetas(df_etiq_edit)
+            anterior = st.session_state.get("_assinatura_etiq_pdf")
+            st.session_state["_assinatura_etiq_pdf"] = assinatura
+            if anterior is not None and anterior != assinatura:
+                st.rerun(scope="app")
 
         render_tabela_etiquetas()
+        _oferecer_download_pdf(
+            st.session_state.get("df_etiquetas_editadas", st.session_state["df_etiquetas"]),
+            caminho_modelo_repo,
+            arquivo_modelo_upload,
+        )

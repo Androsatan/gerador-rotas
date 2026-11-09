@@ -41,6 +41,9 @@ def iniciar_estado():
     if "avisos_duplicados" not in st.session_state:
         st.session_state["avisos_duplicados"] = []
 
+    if "avisos_sem_endereco" not in st.session_state:
+        st.session_state["avisos_sem_endereco"] = []
+
     if "df_etiquetas" not in st.session_state:
         st.session_state["df_etiquetas"] = pd.DataFrame()
 
