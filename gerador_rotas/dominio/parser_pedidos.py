@@ -36,7 +36,8 @@ _SIGLA_POR_ORIGEM = {
     "gd": "GD",
     "bg": "BG",
     "gaara bg": "BG",
-    "2k": "2K",
+    "2k": "KK",
+    "lh": "LH",
     "chucky": "CK",
     "ck": "CK",
     "gb": "GB",
@@ -69,6 +70,13 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
     i = 0
     n = len(linhas)
     vendedor_encaminhado = ""
+    complemento_pendente = ""
+
+    def _proxima_linha_util(inicio: int) -> str:
+        j = inicio
+        while j < n and not linhas[j]:
+            j += 1
+        return linhas[j] if j < n else ""
 
     while i < n:
         l_strip = linhas[i]
@@ -96,6 +104,9 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
             continue
 
         if eh_linha_endereco(l_strip, locais_dict):
+            if complemento_pendente:
+                l_strip = f"{complemento_pendente}, {l_strip}"
+                complemento_pendente = ""
             linhas_endereco.append(l_strip)
         elif linhas_endereco and eh_complemento_pos_endereco(l_strip, locais_dict):
             linhas_endereco[-1] = f"{linhas_endereco[-1]}, {l_strip}"
@@ -103,6 +114,12 @@ def extrair_dados_brutos_do_bloco(linhas_bloco: list, locais_dict: dict, vendedo
             l_strip, linhas[i + 1] if i + 1 < n else "", locais_dict
         ):
             linhas_endereco[-1] = f"{linhas_endereco[-1]}, {l_strip}"
+        elif (
+            not linhas_endereco
+            and eh_complemento_pos_endereco(l_strip, locais_dict)
+            and eh_linha_endereco(_proxima_linha_util(i + 1), locais_dict)
+        ):
+            complemento_pendente = l_strip
         elif eh_linha_produto_clara(l_strip, locais_dict):
             outras_linhas.append(("ITEM", l_strip))
         elif pode_ser_nome_cliente(l_strip, locais_dict):

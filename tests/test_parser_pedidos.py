@@ -197,7 +197,7 @@ ENTREGAR NA CONSELHEIRO LAFAIETE 766
             [
                 ("JÃO DC", "DP"),
                 ("GABRIEL", "TR"),
-                ("NICOLAS", "2K"),
+                ("NICOLAS", "KK"),
                 ("PEDRO ESP", "MC"),
                 ("VINICIUS", "GD"),
                 ("PERSIA", "CK"),
@@ -272,6 +272,59 @@ entrega no local de sempre
 
         self.assertFalse(eh_linha_endereco("silver haze 10", LOCAIS_COM_NOME_PARECIDO))
         self.assertTrue(eh_linha_endereco("Rua Silver 10", LOCAIS_COM_NOME_PARECIDO))
+
+
+class SiglaLhEKTest(unittest.TestCase):
+    def test_encaminhado_de_lh_e_de_2k(self):
+        texto = """
+[14/11/2026 14:31] 2K:
+Encaminhado de Tr
+Pedro
+5g dry Ben 10
+5g og
+
+Dr vieira marques 970 sagrada família
+[14/11/2026 14:32] 2K:
+Encaminhado de LH
+Ryan
+
+Rua Serra do rola moça 381
+
+2 g pak GSC
+[14/11/2026 15:49] 2K: calixto
+
+1g dry
+1g dry
+
+Evaristo da Veiga, 221
+"""
+        pedidos = listar_pre_pedidos(texto, {}, vendedor_padrao="ZZ")
+        self.assertEqual(
+            [(p["Cliente"], p["Vendedor"]) for p in pedidos],
+            [("PEDRO", "TR"), ("RYAN", "LH"), ("CALIXTO", "ZZ")],
+        )
+        self.assertIn("970", pedidos[0]["Endereco_Bruto"])
+        self.assertIn("381", pedidos[1]["Endereco_Bruto"])
+        self.assertIn("221", pedidos[2]["Endereco_Bruto"])
+
+
+class NomeComBlocoEAptoTest(unittest.TestCase):
+    def test_joao_pedro_bl_ap_nao_vira_cliente_generico(self):
+        texto = """
+JOÃO PEDRO BL 01 AP 202
+3g 24k
+1G pak GSC a+
+Condomínio ponto veredas
+Avenida Serra das Palmeiras 350 - Serra dourada vespasiano
+"""
+        pedidos = listar_pre_pedidos(texto, {"Saida": ["pak", "24k"]})
+        self.assertEqual(len(pedidos), 1)
+        self.assertEqual(pedidos[0]["Cliente"], "JOÃO PEDRO BL 01 AP 202")
+        endereco = pedidos[0]["Endereco_Bruto"].lower()
+        self.assertIn("serra das palmeiras", endereco)
+        self.assertIn("350", endereco)
+        self.assertIn("veredas", endereco)
+        self.assertNotIn("joão pedro", endereco)
 
 
 if __name__ == "__main__":

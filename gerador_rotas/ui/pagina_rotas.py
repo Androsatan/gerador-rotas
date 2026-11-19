@@ -119,13 +119,13 @@ def render_pagina_rotas(partida_ok, desc_partida_validada, lat_partida, lon_part
                     opcoes_lista = json.loads(row_amb.get("Opcoes_Endereco", "[]") or "[]")
                 except Exception:
                     opcoes_lista = []
-                if len(opcoes_lista) > 1:
+                if len(opcoes_lista) >= 1:
                     linhas_ambiguas.append((idx_amb, row_amb["Cliente"], opcoes_lista))
 
             if linhas_ambiguas:
                 st.warning(
-                    f"🏘️ **Atenção: {len(linhas_ambiguas)} pedido(s) possuem rua que existe em mais de um bairro!** "
-                    "Escolha abaixo qual é o bairro correto de cada cliente:"
+                    f"🏘️ **Atenção: {len(linhas_ambiguas)} pedido(s) com rua em mais de um lugar, ou com bairro que não confere!** "
+                    "Escolha abaixo o endereço correto de cada cliente:"
                 )
                 for idx_amb, nome_cli_amb, opcoes_lista in linhas_ambiguas:
                     col_sel, col_btn_amb = st.columns([3, 1])

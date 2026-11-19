@@ -94,6 +94,23 @@ class EncaixarNaRotaTest(unittest.TestCase):
         self.assertEqual(le["Ordem"].tolist(), ["1º", "2º", "3º"])
 
 
+class EnderecoAlteradoNaRotaTest(unittest.TestCase):
+    def test_so_a_rota_do_endereco_alterado_entra(self):
+        from gerador_rotas.ui.pagina_otimizador import _rotas_com_endereco_novo
+
+        salvo = pd.DataFrame([
+            {"Rota": "ROTA LE", "Endereco": "Rua Otis, 371, Belo Horizonte"},
+            {"Rota": "ROTA FP", "Endereco": "Rua da Bahia, 1000"},
+        ])
+        editado = pd.DataFrame([
+            {"Rota": "ROTA LE", "Endereco": "Rua Oitis, 371, Ibirité"},
+            {"Rota": "ROTA FP", "Endereco": "Rua da Bahia, 1000"},
+        ])
+        indices, rotas = _rotas_com_endereco_novo(editado, salvo)
+        self.assertEqual(indices, [0])
+        self.assertEqual(rotas, ["ROTA LE"])
+
+
 def _sub(matriz, grupo):
     idxs = [0] + [i + 1 for i in grupo]
     m = len(idxs)

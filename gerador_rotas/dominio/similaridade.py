@@ -64,10 +64,20 @@ def tokens_nucleo_rua(nome_rua: str) -> list:
         nucleo = [p for p in palavras if p not in ("rua", "r", "av", "avenida", "alameda", "praca", "travessa", "beco")]
     return nucleo
 
+_PARTICULAS_RUA = {"do", "da", "dos", "das"}
+
+
+def _particulas_rua(nome: str) -> set:
+    palavras = re.findall(r"[a-z]+", remover_acentos(str(nome or "").lower()))
+    return {p for p in palavras if p in _PARTICULAS_RUA}
+
+
 def similaridade_ruas(rua_digitada: str, rua_candidata: str) -> float:
     tipo_digitado = tipo_logradouro(rua_digitada)
     tipo_candidato = tipo_logradouro(rua_candidata)
     if tipo_digitado and tipo_candidato and tipo_digitado != tipo_candidato:
+        return 0.0
+    if tipo_digitado and tipo_candidato and _particulas_rua(rua_digitada) != _particulas_rua(rua_candidata):
         return 0.0
 
     t_dig = tokens_nucleo_rua(rua_digitada)

@@ -47,7 +47,11 @@ class FaixaViaCepTest(unittest.TestCase):
 
     def test_avenida_nao_e_o_mesmo_que_beco(self):
         self.assertEqual(similaridade_ruas("Avenida Amazonas", "Beco Amazonas"), 0.0)
+        self.assertEqual(similaridade_ruas("Rua Oitis", "Rua dos Oitis"), 0.0)
+        self.assertGreater(similaridade_ruas("Rua Oitis", "Rua Oitis"), 0.90)
         self.assertEqual(similaridade_ruas("Av. Amazonas", "Beco Amazonas"), 0.0)
+        self.assertEqual(similaridade_ruas("Rua Oitis", "Rua dos Oitis"), 0.0)
+        self.assertGreater(similaridade_ruas("Rua Oitis", "Rua Oitis"), 0.90)
         self.assertGreater(similaridade_ruas("Av. Amazonas", "Avenida Amazonas"), 0.90)
         self.assertGreater(similaridade_ruas("Amazonas", "Avenida Amazonas"), 0.90)
 
@@ -60,6 +64,16 @@ class FaixaViaCepTest(unittest.TestCase):
         self.assertIn("amazonas", rua.lower())
         self.assertEqual(bairro.lower(), "centro")
         self.assertEqual(cidade, "Belo Horizonte")
+
+    def test_rotulo_endereco_nao_vira_bairro(self):
+        rua, numero, bairro, _cidade = separar_componentes_endereco(
+            "endereço; Rua oitis 371 jardim montanhês"
+        )
+        self.assertEqual(numero, "371")
+        self.assertIn("oitis", rua.lower())
+        self.assertNotIn("endereco", rua.lower())
+        self.assertIn("montanh", bairro.lower())
+        self.assertNotIn("endereco", bairro.lower())
 
     def test_numero_por_extenso_nao_entra_no_nome_da_rua(self):
         for frase in (
@@ -315,14 +329,17 @@ class AvenidaAmazonasTest(unittest.TestCase):
              patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
              patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(None, None)), \
              patch("gerador_rotas.geo.resolver_endereco.buscar_coordenada_bairro", return_value=(False, "", None, None)):
-            endereco, _status, _lat, _lon, _opcoes = buscar_endereco_completo(
+            endereco, status, lat, _lon, opcoes = buscar_endereco_completo(
                 "Avenida Amazonas 1044, Centro"
             )
 
-        self.assertIn("Centro", endereco)
         self.assertIn("Avenida", endereco)
+        self.assertIn("1044", endereco)
         self.assertNotIn("Marrocos", endereco)
         self.assertNotIn("Contagem", endereco)
+        self.assertIn("ESCOLHER", status)
+        self.assertIsNone(lat)
+        self.assertTrue(any("Marrocos" in op for op in opcoes))
 
     def test_numero_por_extenso_confirma_a_rua(self):
         def via(rua, _sem, cidade):
@@ -428,13 +445,187 @@ class AvenidaAmazonasTest(unittest.TestCase):
              patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
              patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
              patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.97, -43.99)):
-            endereco, status, _lat, _lon, _opcoes = buscar_endereco_completo(
+            endereco, status, lat, _lon, opcoes = buscar_endereco_completo(
                 "Serra do rola moça 381"
             )
 
-        self.assertIn("Jatobá", endereco)
-        self.assertIn("Belo Horizonte", endereco)
+        self.assertIn("ESCOLHER", status)
+        self.assertIsNone(lat)
         self.assertNotIn("Vespasiano", endereco)
+        self.assertNotIn("Jatobá", endereco)
+        self.assertTrue(any("Jatobá" in op and "Belo Horizonte" in op for op in opcoes))
+        self.assertTrue(any("Vespasiano" in op for op in opcoes))
+
+    def test_mesma_rua_em_bh_e_nova_lima_pede_o_bairro(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Belo Horizonte":
+                return [{
+                    "logradouro": "Rua Ministro Orozimbo Nonato",
+                    "bairro": "Dona Clara",
+                    "cep": "31260-230",
+                    "localidade": "Belo Horizonte",
+                    "complemento": "",
+                }]
+            if cidade == "Nova Lima":
+                return [
+                    {
+                        "logradouro": "Rua Ministro Orozimbo Nonato",
+                        "bairro": "Vila da Serra",
+                        "cep": "34006-053",
+                        "localidade": "Nova Lima",
+                        "complemento": "",
+                    },
+                    {
+                        "logradouro": "Rua Ministro Orozimbo Nonato",
+                        "bairro": "Vila Castela-2ª Etapa",
+                        "cep": "34007-083",
+                        "localidade": "Nova Lima",
+                        "complemento": "",
+                    },
+                ]
+            return []
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.87, -43.95)):
+            endereco, status, lat, _lon, opcoes = buscar_endereco_completo(
+                "Ministro orozimbo nonato 395"
+            )
+
+        self.assertIn("395", endereco)
+        self.assertNotIn("Dona Clara", endereco)
+        self.assertNotIn("Belo Horizonte", endereco)
+        self.assertIsNone(lat)
+        self.assertIn("ESCOLHER", status)
+        texto = " | ".join(opcoes)
+        self.assertIn("Dona Clara", texto)
+        self.assertIn("31260-230", texto)
+        self.assertIn("Vila da Serra", texto)
+        self.assertIn("34006-053", texto)
+        self.assertIn("Vila Castela", texto)
+        self.assertIn("Nova Lima", texto)
+
+    def test_bairro_escrito_nao_abre_a_outra_cidade(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Belo Horizonte":
+                return [{
+                    "logradouro": "Rua Ministro Orozimbo Nonato",
+                    "bairro": "Dona Clara",
+                    "cep": "31260-230",
+                    "localidade": "Belo Horizonte",
+                    "complemento": "",
+                }]
+            if cidade == "Nova Lima":
+                return [{
+                    "logradouro": "Rua Ministro Orozimbo Nonato",
+                    "bairro": "Vila da Serra",
+                    "cep": "34006-053",
+                    "localidade": "Nova Lima",
+                    "complemento": "",
+                }]
+            return []
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.cep_pelo_numero", return_value=""), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.87, -43.95)):
+            endereco, status, _lat, _lon, opcoes = buscar_endereco_completo(
+                "Ministro orozimbo nonato 395, Dona Clara"
+            )
+
+        self.assertIn("Dona Clara", endereco)
+        self.assertIn("Belo Horizonte", endereco)
+        self.assertNotIn("Nova Lima", endereco)
+        self.assertEqual(opcoes, [])
+        self.assertTrue(status.startswith("✅"), status)
+
+    def test_bairro_escrito_errado_mostra_os_lugares_da_rua(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Belo Horizonte":
+                return [{
+                    "logradouro": "Rua dos Oitis",
+                    "bairro": "Ocupação Vitória",
+                    "cep": "31873-620",
+                    "localidade": "Belo Horizonte",
+                    "complemento": "",
+                }]
+            if cidade == "Ibirité":
+                return [
+                    {
+                        "logradouro": "Rua Oitis",
+                        "bairro": "Jardim Montanhês",
+                        "cep": "32410-348",
+                        "localidade": "Ibirité",
+                        "complemento": "",
+                    },
+                    {
+                        "logradouro": "Rua Oitis",
+                        "bairro": "Residencial Serra Verde",
+                        "cep": "32410-363",
+                        "localidade": "Ibirité",
+                        "complemento": "",
+                    },
+                ]
+            return []
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.cep_pelo_numero", return_value="32410-363"), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.87, -43.95)):
+            endereco, status, lat, _lon, opcoes = buscar_endereco_completo(
+                "endereço; Rua oitis 371 jardim montanhês"
+            )
+
+        texto = " | ".join(opcoes)
+        self.assertIn("ESCOLHER", status)
+        self.assertIsNone(lat)
+        self.assertNotIn("Otis", endereco)
+        self.assertNotIn("dos Oitis", texto)
+        self.assertNotIn("Belo Horizonte", texto)
+        self.assertIn("Jardim Montanhês", texto)
+        self.assertIn("32410-348", texto)
+        self.assertIn("Serra Verde", texto)
+        self.assertIn("32410-363", texto)
+        self.assertIn("Ibirité", texto)
+
+    def test_bairro_escrito_que_confere_com_o_cep_do_numero_trava(self):
+        def via(_rua, _sem, cidade):
+            if cidade == "Ibirité":
+                return [
+                    {
+                        "logradouro": "Rua Oitis",
+                        "bairro": "Jardim Montanhês",
+                        "cep": "32410-348",
+                        "localidade": "Ibirité",
+                        "complemento": "",
+                    },
+                    {
+                        "logradouro": "Rua Oitis",
+                        "bairro": "Residencial Serra Verde",
+                        "cep": "32410-363",
+                        "localidade": "Ibirité",
+                        "complemento": "",
+                    },
+                ]
+            return []
+
+        with patch("gerador_rotas.geo.resolver_endereco.consultar_viacep_com_tolerancia", side_effect=via), \
+             patch("gerador_rotas.geo.resolver_endereco.cep_pelo_numero", return_value="32410-348"), \
+             patch("gerador_rotas.geo.resolver_endereco.buscar_candidatos_multifonte", return_value=[]), \
+             patch("gerador_rotas.geo.resolver_endereco.consultar_cep_direto", return_value={}), \
+             patch("gerador_rotas.geo.resolver_endereco.geocodificar_endereco_rua", return_value=(-19.97, -44.06)):
+            endereco, status, _lat, _lon, opcoes = buscar_endereco_completo(
+                "Rua oitis 371 jardim montanhês"
+            )
+
+        self.assertIn("Jardim Montanhês", endereco)
+        self.assertIn("Ibirité", endereco)
+        self.assertIn("32410-348", endereco)
+        self.assertNotIn("Serra Verde", endereco)
+        self.assertEqual(opcoes, [])
         self.assertTrue(status.startswith("✅"), status)
 
     def test_geocodificador_de_outra_cidade_nao_troca_o_municipio(self):

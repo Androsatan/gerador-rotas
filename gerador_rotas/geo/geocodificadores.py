@@ -95,7 +95,7 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                 via_arc = " ".join(partes_v).strip()
                 if not via_arc:
                     continue
-                if similaridade_ruas(rua, via_arc) < 0.68:
+                if similaridade_ruas(rua, via_arc) < 0.90:
                     continue
 
                 via_arc = formatar_via_com_prefixo(via_arc, rua)
@@ -132,7 +132,7 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                 props = feat.get("properties", {})
                 coords = feat.get("geometry", {}).get("coordinates", [])
                 rua_ph = props.get("street") or props.get("name") or ""
-                if len(coords) == 2 and rua_ph and similaridade_ruas(rua, rua_ph) >= 0.68:
+                if len(coords) == 2 and rua_ph and similaridade_ruas(rua, rua_ph) >= 0.90:
                     lon_p, lat_p = float(coords[0]), float(coords[1])
                     if not dentro_perimetro_rmbh(lat_p, lon_p):
                         continue
@@ -175,7 +175,7 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
                         continue
                     ed = item.get("address", {})
                     via_n = ed.get("road") or item.get("name") or ""
-                    if not via_n or similaridade_ruas(rua, via_n) < 0.68:
+                    if not via_n or similaridade_ruas(rua, via_n) < 0.90:
                         continue
                     b_n = ed.get("suburb") or ed.get("neighbourhood") or ed.get("quarter") or ""
                     if eh_nome_de_cidade(b_n):
@@ -196,3 +196,30 @@ def buscar_candidatos_multifonte(rua: str, numero: str, bairro_dica: str, cidade
             pass
 
     return candidatos
+
+
+def cep_pelo_numero(rua: str, numero: str) -> str:
+    """CEP que o número ocupa, quando o mapa de ruas confirma a mesma via."""
+    if not str(rua or "").strip() or not str(numero or "").strip():
+        return ""
+    headers = {"User-Agent": "GeradorRotasRMBH/3.0 (contato@geradorrotas.app)"}
+    consulta = f"{formatar_via_com_prefixo(rua, rua)}, {numero}, Minas Gerais, Brasil"
+    url = (
+        "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates"
+        f"?SingleLine={quote(consulta)}&searchExtent=-44.60,-20.40,-43.40,-19.40"
+        "&outFields=StName,Postal&maxLocations=1&f=json"
+    )
+    try:
+        resp = requests.get(url, headers=headers, timeout=3.0)
+        if resp.status_code != 200:
+            return ""
+        candidatos = resp.json().get("candidates") or []
+        if not candidatos:
+            return ""
+        at = candidatos[0].get("attributes") or {}
+        via = str(at.get("StName") or "")
+        if via and similaridade_ruas(rua, via) < 0.90:
+            return ""
+        return str(at.get("Postal") or "")
+    except Exception:
+        return ""

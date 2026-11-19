@@ -1,5 +1,6 @@
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import streamlit as st
 
@@ -9,6 +10,7 @@ from gerador_rotas.dominio.endereco_texto import (
     eh_nome_de_cidade,
     eh_regional_bh,
     escolher_registro_viacep,
+    faixa_viacep_exclui_numero,
     formatar_via_com_prefixo,
     separar_componentes_endereco,
 )
@@ -21,6 +23,7 @@ from gerador_rotas.geo.cep import consultar_cep_direto, consultar_viacep_com_tol
 from gerador_rotas.geo.geocodificadores import (
     buscar_candidatos_multifonte,
     buscar_coordenada_bairro,
+    cep_pelo_numero,
     geocodificar_endereco_rua,
 )
 
@@ -86,8 +89,111 @@ def buscar_endereco_completo(endereco_bruto: str):
 
     cidades_para_testar = cidades_rmbh_para_busca(cidade)
     cidade_fixa = bool(cidade_escrita(str(endereco_bruto))) or cidade != "Belo Horizonte"
+    busca_aberta = not cidade_fixa
+    endereco_ambiguo = False
 
-    if len(rua_sem_prefixo) >= 2:
+    def _mesma_rua_na_lista(dados_viacep):
+        if not dados_viacep:
+            return []
+        return [
+            d for d in dados_viacep
+            if d.get("bairro")
+            and similaridade_ruas(rua, d.get("logradouro", "")) >= 0.90
+            and not (
+                numero and faixa_viacep_exclui_numero(numero, d.get("complemento") or "")
+            )
+        ]
+
+    def _adotar_unico(escolhido, cid_teste):
+        nonlocal logradouro_oficial, cidade_oficial, cep_encontrado
+        nonlocal numero_confirmado_viacep, bairro_travado
+        mapa_bairros_opcoes.clear()
+        logradouro_oficial = formatar_via_com_prefixo(escolhido.get("logradouro", ""), rua)
+        adotar_bairro(escolhido.get("bairro") or bairro_dica, do_cep=True)
+        cidade_oficial = escolhido.get("localidade", cid_teste)
+        cep_encontrado = escolhido.get("cep", "") or cep_encontrado
+        numero_confirmado_viacep = True
+        bairro_travado = True
+
+    if busca_aberta and len(rua_sem_prefixo) >= 2:
+        achados_abertos = []
+        try:
+            dados_pref = consultar_viacep_com_tolerancia(rua, rua_sem_prefixo, cidade)
+        except ConnectionError:
+            dados_pref = None
+        buscar_outras = False
+        if dados_pref is not None:
+            mesma_pref = _mesma_rua_na_lista(dados_pref)
+            if mesma_pref:
+                achados_abertos.extend(mesma_pref)
+                buscar_outras = True
+            elif dados_pref:
+                melhor_pref = max(
+                    similaridade_ruas(rua, d.get("logradouro", "")) for d in dados_pref
+                )
+                buscar_outras = melhor_pref < 0.80
+            else:
+                buscar_outras = True
+        if buscar_outras:
+            outras = [cid for cid in cidades_para_testar if cid != cidade]
+
+            def _linhas_da_cidade(cid_teste):
+                try:
+                    dados = consultar_viacep_com_tolerancia(rua, rua_sem_prefixo, cid_teste)
+                except ConnectionError:
+                    return []
+                return _mesma_rua_na_lista(dados)
+
+            with ThreadPoolExecutor(max_workers=min(8, max(1, len(outras)))) as pool:
+                for linhas in pool.map(_linhas_da_cidade, outras):
+                    achados_abertos.extend(linhas)
+
+        unicos = []
+        vistos = set()
+        for item in achados_abertos:
+            chave = remover_acentos(
+                f"{item.get('bairro')}|{item.get('localidade')}".lower()
+            )
+            if not chave or chave in vistos:
+                continue
+            vistos.add(chave)
+            unicos.append(item)
+        def _bate_bairro(item) -> bool:
+            return bool(bairro_dica) and similaridade_bairros(bairro_dica, item.get("bairro") or "") >= 0.72
+
+        if bairro_dica:
+            compativeis = [item for item in unicos if _bate_bairro(item)]
+        else:
+            compativeis = list(unicos)
+        apresentar = compativeis
+        forcar_escolha = False
+        if bairro_dica and compativeis and len(unicos) > len(compativeis):
+            cep_num = re.sub(r"\D", "", cep_pelo_numero(rua, numero) or "")
+            if cep_num and not any(re.sub(r"\D", "", item.get("cep") or "") == cep_num for item in compativeis):
+                if any(re.sub(r"\D", "", item.get("cep") or "") == cep_num for item in unicos):
+                    apresentar = unicos
+                    forcar_escolha = True
+        elif bairro_dica and not compativeis and unicos:
+            apresentar = unicos
+            forcar_escolha = True
+
+        if len(apresentar) == 1 and not forcar_escolha:
+            _adotar_unico(apresentar[0], apresentar[0].get("localidade", cidade))
+        elif apresentar and (len(apresentar) > 1 or forcar_escolha):
+            endereco_ambiguo = True
+            logradouro_oficial = formatar_via_com_prefixo(
+                apresentar[0].get("logradouro") or rua, rua
+            )
+            for item in apresentar:
+                registrar_opcao_bairro(
+                    item.get("logradouro") or rua,
+                    item.get("bairro", ""),
+                    item.get("localidade") or cidade,
+                    item.get("cep", ""),
+                    aceitar_regional=True,
+                )
+
+    if not busca_aberta and len(rua_sem_prefixo) >= 2:
         for cid_teste in cidades_para_testar:
             if cidade_fixa and cid_teste != cidade:
                 break
@@ -157,6 +263,24 @@ def buscar_endereco_completo(endereco_bruto: str):
                         aceitar_regional=True,
                     )
                 break
+
+    if endereco_ambiguo:
+        opcoes_bairros = []
+        vistas = set()
+        for texto_op in mapa_bairros_opcoes.values():
+            chave_op = remover_acentos(texto_op.lower())
+            if chave_op in vistas:
+                continue
+            vistas.add(chave_op)
+            opcoes_bairros.append(texto_op)
+        partes_amb = [formatar_via_com_prefixo(logradouro_oficial or rua, rua)]
+        if numero:
+            partes_amb.append(numero)
+        if len(opcoes_bairros) == 1:
+            status_amb = "⚠️ BAIRRO INFORMADO NÃO CONFERE (ESCOLHER)"
+        else:
+            status_amb = f"⚠️ {len(opcoes_bairros)} BAIRROS ENCONTRADOS (ESCOLHER)"
+        return ", ".join(partes_amb), status_amb, None, None, opcoes_bairros
 
     candidatos_geo = buscar_candidatos_multifonte(
         logradouro_oficial if logradouro_oficial else rua,

@@ -133,6 +133,16 @@ def eh_linha_endereco(linha: str, locais_dict: dict = None) -> bool:
     if linha_limpa.startswith(PREFIXOS_RUA):
         return True
 
+    if not re.search(r"\b(rua|avenida|av\.?|alameda|travessa|praca|rodovia|beco)\b", linha_limpa):
+        unidade = re.search(
+            r"\b(?:bloco|bl\.?|apto|apt\.?|ap\.?|apartamento|sala|sl\.?)\s*\d",
+            linha_limpa,
+        )
+        if unidade:
+            antes = re.findall(r"[a-z]{2,}", linha_limpa[:unidade.start()])
+            if antes:
+                return False
+
     if re.search(r"\b(rua|avenida|av\.?|alameda|travessa|praca|rodovia)\s*[a-z]{2,}", linha_limpa) and re.search(r"\b(?:n\.?\s*)?\d{1,5}\b", linha_limpa):
         return True
 
@@ -239,7 +249,7 @@ _RE_CORTESIA_ENTREGA = re.compile(
     re.IGNORECASE,
 )
 _RE_ROTULO_ENTREGA = re.compile(
-    r"^(?:endere[cç]o(?:\s+de\s+entrega)?|end\.?|local(?:\s+de\s+entrega)?|entrega|ponto)\s*[:\-]\s*",
+    r"^(?:endere[cç]o(?:\s+de\s+entrega)?|end\.?|local(?:\s+de\s+entrega)?|entrega|ponto)\s*[:\-;]\s*",
     re.IGNORECASE,
 )
 _RE_VERBO_ENTREGA = re.compile(
@@ -300,8 +310,11 @@ def separar_componentes_endereco(endereco_bruto: str):
         flags=re.IGNORECASE
     )
     if match_meio:
-        possivel_bairro_antes = match_meio.group(1).strip(" ,.-:")
-        if possivel_bairro_antes and not remover_acentos(possivel_bairro_antes.lower()).startswith(PREFIXOS_RUA):
+        possivel_bairro_antes = match_meio.group(1).strip(" ,.-:; ")
+        rotulo = remover_acentos(possivel_bairro_antes.lower()).strip(" ,.;:-")
+        if rotulo in {"endereco", "end", "local", "entrega", "ponto", "bairro"}:
+            end_limpo = f"{match_meio.group(2)} {match_meio.group(3)}"
+        elif possivel_bairro_antes and not remover_acentos(possivel_bairro_antes.lower()).startswith(PREFIXOS_RUA):
             bairro_antes_da_rua = possivel_bairro_antes
             end_limpo = f"{match_meio.group(2)} {match_meio.group(3)}"
 

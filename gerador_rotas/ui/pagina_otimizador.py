@@ -80,6 +80,39 @@ def _limpar_rotas_montadas():
     st.session_state["contador_form_otimizador"] = st.session_state.get("contador_form_otimizador", 0) + 1
 
 
+def _rotas_com_endereco_novo(df_edit: pd.DataFrame, df_salvo: pd.DataFrame):
+    """Linhas cujo endereço mudou, e as rotas que precisam ser encaixadas de novo."""
+    editado = df_edit.reset_index(drop=True)
+    salvo = df_salvo.reset_index(drop=True)
+    if editado.empty or "Endereco" not in editado.columns:
+        return [], []
+    if len(editado) != len(salvo) or "Endereco" not in salvo.columns:
+        indices = list(editado.index)
+    else:
+        indices = [
+            i for i in editado.index
+            if str(editado.at[i, "Endereco"]).strip() != str(salvo.at[i, "Endereco"]).strip()
+        ]
+    rotas = []
+    for i in indices:
+        rota = str(editado.at[i, "Rota"])
+        if rota not in rotas:
+            rotas.append(rota)
+    return indices, rotas
+
+
+def _aplicar_coordenadas_novas(df_edit: pd.DataFrame, indices: list) -> pd.DataFrame:
+    saida = df_edit.reset_index(drop=True).copy()
+    if not indices:
+        return saida
+    mapa = _coordenadas_dos_enderecos([str(saida.at[i, "Endereco"]) for i in indices])
+    for i in indices:
+        lat, lon = mapa.get(str(saida.at[i, "Endereco"]), (None, None))
+        saida.at[i, "Lat"] = lat
+        saida.at[i, "Lon"] = lon
+    return saida
+
+
 def _sem_marca_de_exclusao(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty or "Excluir" not in df.columns:
         return df
@@ -206,6 +239,7 @@ def render_pagina_otimizador(partida_ok, desc_partida_validada, lat_partida, lon
         st.caption(
             "A otimização mantém cada cliente na rota em que foi colado. "
             "Um pedido novo entra na sequência dessa rota, e não fica por último só por ter sido adicionado agora. "
+            "Se mudar o endereço de quem já está na rota, clique em Reotimizar a rota. "
             "Para passar um pedido de uma rota para outra ou mudar quem é o PRIMEIRO/ÚLTIMO, "
             "altere a coluna Rota ou Posição: a sequência é recalculada."
         )
@@ -328,6 +362,36 @@ def render_pagina_otimizador(partida_ok, desc_partida_validada, lat_partida, lon
                     geometrias,
                     avisos,
                 )
+                st.rerun()
+
+        if st.button(
+            "↻ Reotimizar a rota",
+            type="primary",
+            use_container_width=True,
+            disabled=not partida_ok,
+        ):
+            editado = _sem_marca_de_exclusao(df_edit)
+            salvo = _sem_marca_de_exclusao(df_base)
+            indices, rotas_mudadas = _rotas_com_endereco_novo(editado, salvo)
+            if not rotas_mudadas:
+                st.toast("Altere o endereço na tabela e clique de novo para encaixar o cliente.")
+            else:
+                with st.spinner("Localizando o endereço novo e encaixando na rota..."):
+                    atualizado = _aplicar_coordenadas_novas(editado, indices)
+                    df_final = atualizado
+                    resumo_novo, geometrias, avisos = {}, {}, []
+                    for rota in rotas_mudadas:
+                        df_final, resumo_novo, geometrias, avisos = encaixar_na_rota(
+                            df_final, nomes, rota, lat_partida, lon_partida
+                        )
+                    _gravar_rotas(
+                        df_final,
+                        nomes,
+                        resumo_novo,
+                        (lat_partida, lon_partida),
+                        geometrias,
+                        avisos,
+                    )
                 st.rerun()
 
         mudou = (
